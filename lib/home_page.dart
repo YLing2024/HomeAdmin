@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'api.dart';
+import 'blog_page.dart';
 import 'chat_page.dart';
+import 'command_palette.dart';
 import 'login_page.dart';
+import 'reset_totp_page.dart';
 import 'system_page.dart';
 import 'theme.dart';
+import 'version_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,45 +20,69 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _tab = 0;
+  bool _cmdOpen = false;
 
   @override
   void initState() {
     super.initState();
     _restoreTab();
+    // 全局 Ctrl/Cmd+K 命令面板（对齐 Web）
+    HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    super.dispose();
+  }
+
+  bool _onKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+    final isK = event.logicalKey == LogicalKeyboardKey.keyK ||
+        event.logicalKey == LogicalKeyboardKey.keyK;
+    if (isK && (HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed)) {
+      _openCommandPalette();
+      return true;
+    }
+    return false;
   }
 
   Future<void> _restoreTab() async {
     final sp = await SharedPreferences.getInstance();
     final saved = sp.getString('admin_tab');
     if (!mounted) return;
-    setState(() => _tab = saved == 'system' ? 1 : 0);
+    final map = {'chat': 0, 'system': 1, 'version': 2, 'blog': 3};
+    setState(() => _tab = map[saved] ?? 0);
   }
 
   Future<void> _selectTab(int i) async {
     setState(() => _tab = i);
     final sp = await SharedPreferences.getInstance();
-    await sp.setString('admin_tab', i == 0 ? 'chat' : 'system');
+    const names = ['chat', 'system', 'version', 'blog'];
+    await sp.setString('admin_tab', names[i]);
+  }
+
+  void _openCommandPalette() {
+    if (_cmdOpen) return;
+    setState(() => _cmdOpen = true);
+    CommandPaletteDialog.show(
+      context,
+      onSwitchTab: (i) => _selectTab(i),
+      onShowReset: () => showResetTotp(context),
+      onLogout: _logout,
+    ).whenComplete(() {
+      if (mounted) setState(() => _cmdOpen = false);
+    });
   }
 
   Future<void> _logout() async {
     await forceLogout();
   }
 
-  Future<void> _openChangePassword() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => const _ChangePasswordDialog(),
-    );
-    if (ok == true && mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('密码已修改，请重新登录')));
-      await forceLogout();
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
+    final c = context.c;
     return Scaffold(
       body: GlowBackground(
         child: SafeArea(
@@ -70,20 +98,20 @@ class _HomePageState extends State<HomePage> {
                       height: 38,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        gradient: kAmberGradient,
-                        borderRadius: BorderRadius.circular(11),
+                        color: c.fg,
+                        borderRadius: BorderRadius.circular(4),
                       ),
-                      child: const Icon(
+                      child: Icon(
                         Icons.admin_panel_settings,
-                        color: Colors.black,
+                        color: c.bg,
                         size: 22,
                       ),
                     ),
                     const SizedBox(width: 10),
-                    const Text(
+                    Text(
                       'Admin',
                       style: TextStyle(
-                        color: Colors.white,
+                        color: c.fg,
                         fontSize: 18,
                         fontWeight: FontWeight.w700,
                         letterSpacing: 0.6,
@@ -91,36 +119,28 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const Spacer(),
                     IconButton(
-                      onPressed: _openChangePassword,
-                      tooltip: '修改密码',
-                      icon: const Icon(Icons.key_outlined, color: kMuted),
+                      onPressed: _openCommandPalette,
+                      tooltip: '命令面板 (Ctrl+K)',
+                      icon: Icon(Icons.search, color: c.muted),
                     ),
-                    IconButton(
-                      onPressed: _logout,
-                      tooltip: '退出登录',
-                      icon: const Icon(Icons.logout, color: kMuted),
+                    _UserMenu(
+                      onToggleTheme: () => ThemePrefs.toggle(),
+                      onShowReset: () => showResetTotp(context),
+                      onLogout: _logout,
                     ),
                   ],
                 ),
               ),
               Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 260),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  transitionBuilder: (child, anim) => FadeTransition(
-                    opacity: anim,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(0, 0.02),
-                        end: Offset.zero,
-                      ).animate(anim),
-                      child: child,
-                    ),
-                  ),
-                  child: _tab == 0
-                      ? const ChatPage(key: ValueKey('chat'))
-                      : const SystemPage(key: ValueKey('system')),
+                // IndexedStack：四个面板常驻挂载，切换不销毁聊天状态（流式/草稿/输入）
+                child: IndexedStack(
+                  index: _tab,
+                  children: [
+                    ChatPage(active: _tab == 0, key: const ValueKey('chat')),
+                    const SystemPage(key: ValueKey('system')),
+                    const VersionPage(key: ValueKey('version')),
+                    const BlogPage(key: ValueKey('blog')),
+                  ],
                 ),
               ),
             ],
@@ -141,129 +161,125 @@ class _HomePageState extends State<HomePage> {
             selectedIcon: Icon(Icons.monitor_heart),
             label: '系统',
           ),
+          NavigationDestination(
+            icon: Icon(Icons.article_outlined),
+            selectedIcon: Icon(Icons.article),
+            label: '版本',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.edit_note),
+            selectedIcon: Icon(Icons.edit_note),
+            label: '博客',
+          ),
         ],
       ),
     );
   }
 }
 
-class _ChangePasswordDialog extends StatefulWidget {
-  const _ChangePasswordDialog();
+/// 用户菜单：主题切换 / 重置验证器 / 退出登录（对齐 Web user-dropdown）
+class _UserMenu extends StatefulWidget {
+  const _UserMenu({
+    required this.onToggleTheme,
+    required this.onShowReset,
+    required this.onLogout,
+  });
+
+  final VoidCallback onToggleTheme;
+  final VoidCallback onShowReset;
+  final VoidCallback onLogout;
 
   @override
-  State<_ChangePasswordDialog> createState() => _ChangePasswordDialogState();
+  State<_UserMenu> createState() => _UserMenuState();
 }
 
-class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
-  final _old = TextEditingController();
-  final _new = TextEditingController();
-  final _confirm = TextEditingController();
-  bool _busy = false;
+class _UserMenuState extends State<_UserMenu> {
+  bool _open = false;
 
-  @override
-  void dispose() {
-    _old.dispose();
-    _new.dispose();
-    _confirm.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    final oldP = _old.text.trim();
-    final newP = _new.text.trim();
-    final confirm = _confirm.text.trim();
-    if (oldP.isEmpty || newP.isEmpty) {
-      _toast('请填写完整');
-      return;
-    }
-    if (newP.length < 6) {
-      _toast('新密码至少 6 位');
-      return;
-    }
-    if (newP != confirm) {
-      _toast('两次输入的新密码不一致');
-      return;
-    }
-    setState(() => _busy = true);
-    try {
-      await Api.changePassword(oldP, newP);
-      if (mounted) Navigator.of(context).pop(true);
-    } catch (e) {
-      if (!mounted) return;
-      final handled = await handleAuthError(context, e);
-      if (!handled && mounted) _toast(e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
+  void _close() => setState(() => _open = false);
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Row(
-        children: [
-          Icon(Icons.key_outlined, color: kAmber, size: 22),
-          SizedBox(width: 8),
-          Text('修改密码', style: TextStyle(fontSize: 17)),
-        ],
-      ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _old,
-            obscureText: true,
-            decoration: const InputDecoration(hintText: '旧密码'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _new,
-            obscureText: true,
-            decoration: const InputDecoration(hintText: '新密码（至少 6 位）'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _confirm,
-            obscureText: true,
-            onSubmitted: (_) => _busy ? null : _submit(),
-            decoration: const InputDecoration(hintText: '确认新密码'),
-          ),
-          const SizedBox(height: 6),
-          const Row(
+    final c = context.c;
+    final isDark = context.isDark;
+    return PopupMenuButton<String>(
+      offset: const Offset(0, 44),
+      color: c.surface,
+      onOpened: () => setState(() => _open = true),
+      onCanceled: _close,
+      onSelected: (v) {
+        setState(() => _open = false);
+        switch (v) {
+          case 'theme':
+            widget.onToggleTheme();
+          case 'reset':
+            widget.onShowReset();
+          case 'logout':
+            widget.onLogout();
+        }
+      },
+      itemBuilder: (ctx) => [
+        PopupMenuItem(
+          value: 'theme',
+          child: Row(
             children: [
-              Icon(Icons.info_outline, size: 13, color: kMuted),
-              SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  '修改后所有会话将失效，需要重新登录',
-                  style: TextStyle(color: kMuted, fontSize: 11),
-                ),
-              ),
+              Icon(isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined, size: 18, color: c.muted),
+              const SizedBox(width: 10),
+              Text(isDark ? '浅色主题' : '深色主题', style: TextStyle(color: c.fg, fontSize: 13)),
             ],
           ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: _busy ? null : () => Navigator.of(context).pop(false),
-          child: const Text('取消'),
         ),
-        TextButton(
-          onPressed: _busy ? null : _submit,
-          child: _busy
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('确定'),
+        PopupMenuItem(
+          value: 'reset',
+          child: Row(
+            children: [
+              Icon(Icons.qr_code, size: 18, color: c.muted),
+              const SizedBox(width: 10),
+              Text('重置验证器', style: TextStyle(color: c.fg, fontSize: 13)),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: 'logout',
+          child: Row(
+            children: [
+              Icon(Icons.logout, size: 18, color: c.danger),
+              const SizedBox(width: 10),
+              Text('退出登录', style: TextStyle(color: c.danger, fontSize: 13)),
+            ],
+          ),
         ),
       ],
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: _open ? c.accent : c.border,
+          ),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: c.ok,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Admin',
+              style: TextStyle(color: c.fg, fontSize: 13),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.arrow_drop_down, size: 16, color: c.muted),
+          ],
+        ),
+      ),
     );
   }
 }

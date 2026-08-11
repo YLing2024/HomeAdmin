@@ -9,6 +9,7 @@ import 'ws.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Api.restoreToken();
+  await ThemePrefs.load();
   Api.onAuthRequired = forceLogout;
   WsClient.instance.onAuthRequired = forceLogout;
   runApp(const AdminApp());
@@ -19,12 +20,17 @@ class AdminApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Admin',
-      debugShowCheckedModeBanner: false,
-      navigatorKey: rootNavigatorKey,
-      theme: buildTheme(),
-      home: Api.token.isEmpty ? const LoginPage() : const HomePage(),
+    return ValueListenableBuilder<Brightness>(
+      valueListenable: ThemePrefs.brightness,
+      builder: (context, brightness, _) {
+        return MaterialApp(
+          title: 'Admin',
+          debugShowCheckedModeBanner: false,
+          navigatorKey: rootNavigatorKey,
+          theme: buildTheme(brightness),
+          home: Api.token.isEmpty ? const LoginPage() : const HomePage(),
+        );
+      },
     );
   }
 }

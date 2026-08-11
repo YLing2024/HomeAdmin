@@ -36,6 +36,7 @@ Future<bool> handleAuthError(BuildContext context, Object e) async {
   return true;
 }
 
+/// 登录页：输入 6 位 TOTP 动态验证码，调认证中心 /api/login 校验
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
@@ -44,35 +45,56 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _pw = TextEditingController();
+  final _code = TextEditingController();
+  final _focus = FocusNode();
   bool _busy = false;
-  bool _obscure = true;
+  String? _error;
 
   @override
   void dispose() {
-    _pw.dispose();
+    _code.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
   Future<void> _login() async {
-    final pw = _pw.text.trim();
-    if (pw.isEmpty) {
-      _toast('请输入密码');
+    final code = _code.text.trim();
+    if (code.isEmpty) {
+      _toast('请输入验证码');
       return;
     }
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
-      final token = await Api.login(pw);
+      final token = await Api.login(code);
       await Api.saveToken(token);
       if (!mounted) return;
       Navigator.of(
         context,
       ).pushReplacement(MaterialPageRoute(builder: (_) => const HomePage()));
     } catch (e) {
-      _toast(e.toString());
+      if (!mounted) return;
+      final handled = await handleAuthError(context, e);
+      if (handled) return;
+      setState(() => _error = _messageOf(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  String _messageOf(Object e) {
+    if (e is ApiException) {
+      if (e.errorCode == 'rate_limited' && e.retryAfter != null) {
+        return '尝试过多，请 ${e.retryAfter} 秒后再试';
+      }
+      if (e.errorCode == 'totp_setup_required') {
+        return '服务端 TOTP 未配置，请先联系管理员设置';
+      }
+      return e.message;
+    }
+    return e.toString();
   }
 
   void _toast(String msg) {
@@ -82,6 +104,7 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    final c = context.c;
     return Scaffold(
       body: GlowBackground(
         child: SafeArea(
@@ -93,9 +116,9 @@ class _LoginPageState extends State<LoginPage> {
                 child: Container(
                   padding: const EdgeInsets.fromLTRB(28, 36, 28, 28),
                   decoration: BoxDecoration(
-                    color: kSurface.withValues(alpha: 0.85),
-                    borderRadius: BorderRadius.circular(28),
-                    border: Border.all(color: kBorder),
+                    color: c.surface,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: c.border),
                     boxShadow: const [
                       BoxShadow(
                         color: Colors.black54,
@@ -114,105 +137,69 @@ class _LoginPageState extends State<LoginPage> {
                           height: 76,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            gradient: kAmberGradient,
-                            borderRadius: BorderRadius.circular(22),
-                            boxShadow: [
-                              BoxShadow(
-                                color: kAmber.withValues(alpha: 0.35),
-                                blurRadius: 24,
-                                offset: const Offset(0, 8),
-                              ),
-                            ],
+                            color: c.fg,
+                            borderRadius: BorderRadius.circular(8),
                           ),
-                          child: const Icon(
+                          child: Icon(
                             Icons.admin_panel_settings,
-                            color: Colors.black,
+                            color: c.bg,
                             size: 40,
                           ),
                         ),
                       ),
                       const SizedBox(height: 20),
-                      const Text(
+                      Text(
                         'Admin',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                          color: Colors.white,
+                          color: c.fg,
                           fontSize: 24,
                           fontWeight: FontWeight.w700,
                           letterSpacing: 1.2,
                         ),
                       ),
                       const SizedBox(height: 6),
-                      const Text(
+                      Text(
                         '云铃管理后台',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: kMuted, fontSize: 13),
+                        style: TextStyle(color: c.muted, fontSize: 13),
                       ),
                       const SizedBox(height: 32),
                       TextField(
-                        controller: _pw,
-                        obscureText: _obscure,
-                        autofocus: true,
+                        controller: _code,
+                        focusNode: _focus,
                         enabled: !_busy,
-                        onSubmitted: (_) => _login(),
+                        keyboardType: TextInputType.number,
+                        textInputAction: TextInputAction.done,
+                        maxLength: 6,
+                        onSubmitted: (_) => _busy ? null : _login(),
                         decoration: InputDecoration(
-                          hintText: '请输入管理密码',
-                          prefixIcon: const Icon(Icons.lock_outline),
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _obscure
-                                  ? Icons.visibility_outlined
-                                  : Icons.visibility_off_outlined,
-                            ),
-                            onPressed: () =>
-                                setState(() => _obscure = !_obscure),
-                          ),
+                          hintText: '输入 6 位动态验证码',
+                          counterText: '',
+                          prefixIcon: const Icon(Icons.fingerprint),
+                          errorText: _error,
                         ),
                       ),
                       const SizedBox(height: 20),
-                      DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: kAmberGradient,
-                          borderRadius: BorderRadius.circular(14),
-                          boxShadow: [
-                            BoxShadow(
-                              color: kAmber.withValues(alpha: 0.25),
-                              blurRadius: 18,
-                              offset: const Offset(0, 6),
-                            ),
-                          ],
-                        ),
-                        child: ElevatedButton(
-                          onPressed: _busy ? null : _login,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.transparent,
-                            shadowColor: Colors.transparent,
-                          ),
-                          child: _busy
-                              ? const SizedBox(
-                                  width: 22,
-                                  height: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2.2,
-                                    color: Colors.black,
-                                  ),
-                                )
-                              : const Text('登 录'),
-                        ),
+                      ElevatedButton(
+                        onPressed: _busy ? null : _login,
+                        child: _busy
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(strokeWidth: 2.2),
+                              )
+                            : const Text('登 录'),
                       ),
                       const SizedBox(height: 16),
                       const Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(
-                            Icons.fingerprint,
-                            size: 14,
-                            color: kMuted,
-                          ),
+                          Icon(Icons.fingerprint, size: 14, color: kMutedHint),
                           SizedBox(width: 6),
                           Text(
-                            '仅限管理员访问',
-                            style: TextStyle(color: kMuted, fontSize: 12),
+                            'TOTP 动态验证码登录',
+                            style: TextStyle(color: kMutedHint, fontSize: 12),
                           ),
                         ],
                       ),
@@ -227,3 +214,6 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 }
+
+/// 登录页底部小字（浅深色通用的灰色）
+const Color kMutedHint = Color(0xFF8A857F);
