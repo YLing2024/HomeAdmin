@@ -216,131 +216,153 @@ class _SystemPageState extends State<SystemPage> {
     final procs = data['processes'] is Map ? data['processes'] as Map : const {};
     final cpuUsage = _pct(cpu['usage_percent']);
     final memPercent = _pct(mem['percent']);
-    return Column(
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: PanelCard(
-                title: 'CPU',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${cpuUsage.toStringAsFixed(1)}%',
-                      style: TextStyle(
-                        color: c.fg,
-                        fontSize: 38,
-                        fontWeight: FontWeight.w200,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    MetricBar(percent: cpuUsage),
-                    const SizedBox(height: 10),
-                    _kv(c, '型号', (cpu['model'] ?? '-').toString()),
-                    _kv(c, '核心数', (cpu['cores'] ?? '-').toString()),
-                    _kv(
-                      c,
-                      '进程',
-                      '${_num(procs['running'])} / ${_num(procs['total'])}',
-                    ),
-                    _kv(c, '负载 (1/5/15m)', _fmtLoad(cpu['loadavg'])),
-                  ],
-                ),
-              ),
+
+    final cpuCard = PanelCard(
+      title: 'CPU',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${cpuUsage.toStringAsFixed(1)}%',
+            style: TextStyle(
+              color: c.fg,
+              fontSize: 38,
+              fontWeight: FontWeight.w200,
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: PanelCard(
-                title: '内存',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${memPercent.toStringAsFixed(1)}%',
-                      style: TextStyle(
-                        color: c.fg,
-                        fontSize: 38,
-                        fontWeight: FontWeight.w200,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    MetricBar(percent: memPercent),
-                    const SizedBox(height: 10),
-                    _kv(c, '已用', _fmtBytes(_num(mem['used']))),
-                    _kv(c, '剩余', _fmtBytes(_num(mem['free']))),
-                    _kv(c, '总计', _fmtBytes(_num(mem['total']))),
-                  ],
-                ),
-              ),
+          ),
+          const SizedBox(height: 10),
+          MetricBar(percent: cpuUsage),
+          const SizedBox(height: 10),
+          _kv(c, '型号', (cpu['model'] ?? '-').toString()),
+          _kv(c, '核心数', (cpu['cores'] ?? '-').toString()),
+          _kv(
+            c,
+            '进程',
+            '${_num(procs['running'])} / ${_num(procs['total'])}',
+          ),
+          _kv(c, '负载 (1/5/15m)', _fmtLoad(cpu['loadavg'])),
+        ],
+      ),
+    );
+
+    final memCard = PanelCard(
+      title: '内存',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${memPercent.toStringAsFixed(1)}%',
+            style: TextStyle(
+              color: c.fg,
+              fontSize: 38,
+              fontWeight: FontWeight.w200,
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: PanelCard(
-                title: '系统',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _kv(c, '主机名', (data['hostname'] ?? '-').toString()),
-                    _kv(c, '操作系统', (data['os'] ?? '-').toString()),
-                    _kv(c, '运行时长', _fmtUptime(data['uptime'] is num ? data['uptime'] as num : null)),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: PanelCard(
-                title: '网络',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _kv(c, '↓ 下载', _fmtRate(net['rx_rate'] is num ? net['rx_rate'] as num : null), amber: true),
-                    _kv(c, '↑ 上传', _fmtRate(net['tx_rate'] is num ? net['tx_rate'] as num : null)),
-                    _kv(c, '累计下载', _fmtBytes(_num(net['rx_bytes']))),
-                    _kv(c, '累计上传', _fmtBytes(_num(net['tx_bytes']))),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        PanelCard(
-          title: '磁盘 I/O',
-          child: Column(
+          ),
+          const SizedBox(height: 10),
+          MetricBar(percent: memPercent),
+          const SizedBox(height: 10),
+          _kv(c, '已用', _fmtBytes(_num(mem['used']))),
+          _kv(c, '剩余', _fmtBytes(_num(mem['free']))),
+          _kv(c, '总计', _fmtBytes(_num(mem['total']))),
+        ],
+      ),
+    );
+
+    final sysCard = PanelCard(
+      title: '系统',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _kv(c, '主机名', (data['hostname'] ?? '-').toString()),
+          _kv(c, '操作系统', (data['os'] ?? '-').toString()),
+          _kv(c, '运行时长', _fmtUptime(data['uptime'] is num ? data['uptime'] as num : null)),
+        ],
+      ),
+    );
+
+    final netCard = PanelCard(
+      title: '网络',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _kv(c, '↓ 下载', _fmtRate(net['rx_rate'] is num ? net['rx_rate'] as num : null), amber: true),
+          _kv(c, '↑ 上传', _fmtRate(net['tx_rate'] is num ? net['tx_rate'] as num : null)),
+          _kv(c, '累计下载', _fmtBytes(_num(net['rx_bytes']))),
+          _kv(c, '累计上传', _fmtBytes(_num(net['tx_bytes']))),
+        ],
+      ),
+    );
+
+    final ioCard = PanelCard(
+      title: '磁盘 I/O',
+      child: Column(
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: _rateStat(c, '读', _fmtRate(io['read_rate'] is num ? io['read_rate'] as num : null), amber: true),
-                  ),
-                  _vDivider(c),
-                  Expanded(
-                    child: _rateStat(c, '写', _fmtRate(io['write_rate'] is num ? io['write_rate'] as num : null)),
-                  ),
-                ],
+              Expanded(
+                child: _rateStat(c, '读', _fmtRate(io['read_rate'] is num ? io['read_rate'] as num : null), amber: true),
               ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(child: _rateStat(c, '累计读', _fmtBytes(_num(io['read_bytes'])))),
-                  _vDivider(c),
-                  Expanded(child: _rateStat(c, '累计写', _fmtBytes(_num(io['write_bytes'])))),
-                ],
+              _vDivider(c),
+              Expanded(
+                child: _rateStat(c, '写', _fmtRate(io['write_rate'] is num ? io['write_rate'] as num : null)),
               ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _rateStat(c, '累计读', _fmtBytes(_num(io['read_bytes'])))),
+              _vDivider(c),
+              Expanded(child: _rateStat(c, '累计写', _fmtBytes(_num(io['write_bytes'])))),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 600) {
+          return Column(
+            children: [
+              cpuCard,
+              const SizedBox(height: 12),
+              memCard,
+              const SizedBox(height: 12),
+              sysCard,
+              const SizedBox(height: 12),
+              netCard,
+              const SizedBox(height: 12),
+              ioCard,
+            ],
+          );
+        }
+        return Column(
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: cpuCard),
+                const SizedBox(width: 12),
+                Expanded(child: memCard),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: sysCard),
+                const SizedBox(width: 12),
+                Expanded(child: netCard),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ioCard,
+          ],
+        );
+      },
     );
   }
 
