@@ -1030,6 +1030,7 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> _clearDraft() async {
     _draftTimer?.cancel();
+    _input.clear();
     final key = _draftKey;
     if (key == null || key.isEmpty) return;
     final sp = await SharedPreferences.getInstance();

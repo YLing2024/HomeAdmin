@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -319,7 +320,7 @@ class GlowBackground extends StatelessWidget {
               child: _glow(340, c.accent.withValues(alpha: 0.04)),
             ),
           ],
-          if (child != null) child!,
+          ?child,
         ],
       ),
     );
