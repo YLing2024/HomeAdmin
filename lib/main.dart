@@ -4,14 +4,12 @@ import 'api.dart';
 import 'home_page.dart';
 import 'login_page.dart';
 import 'theme.dart';
-import 'ws.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Api.restoreToken();
   await ThemePrefs.load();
   Api.onAuthRequired = forceLogout;
-  WsClient.instance.onAuthRequired = forceLogout;
   runApp(const AdminApp());
 }
 

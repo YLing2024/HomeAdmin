@@ -1,22 +1,22 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import 'api.dart';
 import 'home_page.dart';
 import 'theme.dart';
-import 'ws.dart';
 
-/// 全局导航 key（供 401 / WS 4001 登出跳转使用）
+/// 全局导航 key（供 401 登出跳转使用）
 final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
 bool _forceLogoutRunning = false;
 
-/// 全局登出：清除 token、关闭 WS、回到登录页。幂等，可被多次触发。
+/// 全局登出：清除 token、回到登录页。幂等，可被多次触发。
 Future<void> forceLogout() async {
   if (_forceLogoutRunning) return;
   _forceLogoutRunning = true;
   try {
     await Api.logout();
-    await WsClient.instance.close();
     final nav = rootNavigatorKey.currentState;
     if (nav != null) {
       nav.pushAndRemoveUntil(
@@ -90,11 +90,125 @@ class _LoginPageState extends State<LoginPage> {
         return '尝试过多，请 ${e.retryAfter} 秒后再试';
       }
       if (e.errorCode == 'totp_setup_required') {
-        return '服务端 TOTP 未配置，请先联系管理员设置';
+        // 首次使用：服务端 TOTP 未配置 → 引导首次绑定（对齐认证中心登录页 setup 流程）
+        _startSetup();
+        return '首次使用：请先完成下方绑定，再输入动态码';
       }
       return e.message;
     }
     return e.toString();
+  }
+
+  /// 首次 TOTP 绑定：调认证中心 /api/totp/setup 获取 secret + otpauthUri，
+  /// 弹窗展示 QR 码 + secret（对齐认证中心登录页 setup 区块）
+  Future<void> _startSetup() async {
+    try {
+      final data = await Api.totpSetup();
+      if (!mounted) return;
+      final secret = (data['secret'] ?? '').toString();
+      final uri = (data['otpauthUri'] ?? '').toString();
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: ctx.c.surface,
+          title: Text('绑定 TOTP 验证器', style: TextStyle(color: ctx.c.fg, fontSize: 16)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '在验证器 App（如 Google Authenticator / 1Password）中扫描二维码，或手动输入密钥，然后回登录页输入动态码。',
+                  style: TextStyle(color: ctx.c.muted, fontSize: 12),
+                ),
+                const SizedBox(height: 14),
+                Center(
+                  child: QrImageView(
+                    data: uri,
+                    version: QrVersions.auto,
+                    size: 180,
+                    backgroundColor: Colors.white,
+                    padding: const EdgeInsets.all(8),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  'SECRET',
+                  style: TextStyle(
+                    color: ctx.c.muted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: ctx.c.bg,
+                    border: Border.all(color: ctx.c.border),
+                  ),
+                  child: SelectableText(
+                    secret,
+                    style: TextStyle(
+                      color: ctx.c.fg,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'OTPAUTH URI',
+                  style: TextStyle(
+                    color: ctx.c.muted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: ctx.c.bg,
+                    border: Border.all(color: ctx.c.border),
+                  ),
+                  child: SelectableText(
+                    uri,
+                    style: TextStyle(color: ctx.c.muted, fontSize: 11, fontFamily: 'monospace'),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextButton.icon(
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: secret));
+                    if (!ctx.mounted) return;
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      const SnackBar(content: Text('密钥已复制')),
+                    );
+                  },
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('复制密钥'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text('关闭', style: TextStyle(color: ctx.c.muted, fontSize: 13)),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '初始化失败: ${e.toString()}');
+    }
   }
 
   void _toast(String msg) {

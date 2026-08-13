@@ -75,13 +75,13 @@ class Api {
 
   /* ============ 登录（认证中心） ============ */
 
-  /// POST /api/login {code} -> {token, expiresIn}
+  /// POST /api/login {code, deviceName} -> {token, expiresIn}
   /// 失败可能返回错误码：invalid_code / rate_limited(带 retryAfter) / totp_setup_required
   static Future<String> login(String code) async {
     final res = await http.post(
       _uri(kAuthBase, '/api/login'),
       headers: _headers(),
-      body: jsonEncode({'code': code}),
+      body: jsonEncode({'code': code, 'deviceName': _deviceName()}),
     );
     final data = _decode(res);
     final t = data['token'];
@@ -89,6 +89,41 @@ class Api {
       throw ApiException('登录失败：未返回 token');
     }
     return t;
+  }
+
+  /// POST /api/totp/setup -> { secret, otpauthUri }
+  /// 认证中心首次 TOTP 绑定（仅未配置时可用；已配置返回 409）
+  static Future<Map<String, dynamic>> totpSetup() async {
+    final res = await http.post(
+      _uri(kAuthBase, '/api/totp/setup'),
+      headers: _headers(),
+    );
+    return _decode(res);
+  }
+
+  /// 设备名推导（对齐 Web deviceName()：应用名 · 系统，供设备会话管理展示）
+  static String _deviceName() {
+    try {
+      final sys = Platform.operatingSystem;
+      String label;
+      switch (sys) {
+        case 'android':
+          label = 'Android';
+        case 'ios':
+          label = 'iOS';
+        case 'windows':
+          label = 'Windows';
+        case 'macos':
+          label = 'macOS';
+        case 'linux':
+          label = 'Linux';
+        default:
+          label = sys;
+      }
+      return 'HomeAdmin · $label';
+    } catch (_) {
+      return 'HomeAdmin';
+    }
   }
 
   /* ============ 系统监控 ============ */

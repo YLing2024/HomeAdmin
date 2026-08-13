@@ -21,7 +21,9 @@ class _SystemPageState extends State<SystemPage> {
   List<Map<String, dynamic>> _history = [];
   List<Map<String, dynamic>> _processes = [];
   List<Map<String, dynamic>> _services = [];
+  double? _totalCpu; // 全部进程 CPU 合计（SSE services.total_cpu）
   String? _error;
+  DateTime? _updated; // 最近一次快照时间（对齐 Web「更新于」）
   String _procSort = 'mem';
 
   SystemStreamHandle? _stream;
@@ -97,6 +99,10 @@ class _SystemPageState extends State<SystemPage> {
       _processes = (p is List)
           ? p.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
           : [];
+      _totalCpu = services['total_cpu'] is num
+          ? (services['total_cpu'] as num).toDouble()
+          : null;
+      _updated = DateTime.now();
       _error = null;
     });
   }
@@ -158,6 +164,11 @@ class _SystemPageState extends State<SystemPage> {
   double _pct(dynamic v) => v is num ? v.toDouble() : 0.0;
   num _num(dynamic v) => v is num ? v : 0;
 
+  String _fmtClock(DateTime t) {
+    String p2(int n) => n.toString().padLeft(2, '0');
+    return '${p2(t.hour)}:${p2(t.minute)}:${p2(t.second)}';
+  }
+
   /// 手动刷新：重连 SSE 立即拉取最新快照
   Future<void> _reconnect() async {
     _connect();
@@ -188,6 +199,16 @@ class _SystemPageState extends State<SystemPage> {
               ),
               const Spacer(),
             ],
+          ),
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.center,
+            child: Text(
+              _updated == null
+                  ? '更新于 --'
+                  : '更新于 ${_fmtClock(_updated!)}',
+              style: TextStyle(color: c.muted, fontSize: 11),
+            ),
           ),
           const SizedBox(height: 12),
           if (_error != null)
@@ -536,6 +557,46 @@ class _SystemPageState extends State<SystemPage> {
                     ],
                   ),
                 ),
+              // 合计行（对齐 Web：合计（全部进程） + CPU 列）
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  border: Border(bottom: BorderSide(color: c.border, width: 0.5)),
+                ),
+                child: Row(
+                  children: [
+                    StatusDot(up: true),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '合计（全部进程）',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: c.fg,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    SizedBox(width: 56, child: Text('', style: TextStyle(color: c.muted, fontSize: 12))),
+                    SizedBox(width: 64, child: Text('', style: TextStyle(color: c.fg, fontSize: 12))),
+                    SizedBox(
+                      width: 60,
+                      child: Text(
+                        _totalCpu == null ? '—' : '${_totalCpu!.toStringAsFixed(1)}%',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          color: c.fg,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),

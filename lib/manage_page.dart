@@ -20,6 +20,7 @@ class _ManagePageState extends State<ManagePage> {
   String? _sessionsError;
   String? _editingId; // 正在重命名的会话 id
   final TextEditingController _editNameCtrl = TextEditingController();
+  final FocusNode _editFocus = FocusNode();
   String? _editError;
   bool _editSaving = false;
   bool _renameInFlight = false;
@@ -39,6 +40,7 @@ class _ManagePageState extends State<ManagePage> {
   @override
   void dispose() {
     _editNameCtrl.dispose();
+    _editFocus.dispose();
     super.dispose();
   }
 
@@ -912,6 +914,7 @@ class _ManagePageState extends State<ManagePage> {
             children: [
               TextField(
                 controller: _editNameCtrl,
+                focusNode: _editFocus,
                 maxLength: 64,
                 enabled: !_editSaving,
                 autofocus: true,
@@ -938,6 +941,10 @@ class _ManagePageState extends State<ManagePage> {
                   ),
                 ),
                 onSubmitted: (_) => _saveRename(s),
+                onTapOutside: (_) {
+                  // 失焦自动保存（对齐 Web 编辑态：无「取消」，失焦即保存）
+                  _saveRename(s);
+                },
               ),
               if (_editError != null)
                 Padding(
