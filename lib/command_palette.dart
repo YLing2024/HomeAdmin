@@ -69,18 +69,12 @@ class _CommandPaletteDialogState extends State<CommandPaletteDialog> {
 
   List<PaletteItem> _buildItems() {
     return [
-      PaletteItem(
-        'new',
-        '新建会话',
-        '开始新对话',
-        () => runAction('newSession'),
-      ),
       PaletteItem('system', '跳到系统页', '打开系统监控', () => widget.onSwitchTab(1)),
       PaletteItem('version', '跳到版本页', '查看软件版本', () => widget.onSwitchTab(2)),
       PaletteItem('blog', '跳到博客页', '管理博客文章', () => widget.onSwitchTab(3)),
-      PaletteItem('chat', '跳到聊天页', '回到聊天界面', () => widget.onSwitchTab(0)),
+      PaletteItem('manage', '跳到管理页', '设备与接口令牌', () => widget.onSwitchTab(4)),
+      PaletteItem('browse', '跳到浏览页', '查看历史会话', () => widget.onSwitchTab(0)),
       PaletteItem('pwd', '重置验证器', '更换 TOTP 验证器', widget.onShowReset),
-      PaletteItem('copy', '复制当前会话ID', '复制到剪贴板', () => runAction('copySessionId')),
       PaletteItem('logout', '退出登录', '安全退出', widget.onLogout),
     ];
   }

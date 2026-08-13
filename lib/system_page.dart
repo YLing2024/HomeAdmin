@@ -4,11 +4,13 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import 'api.dart';
-import 'login_page.dart';
 import 'theme.dart';
 
 class SystemPage extends StatefulWidget {
-  const SystemPage({super.key});
+  const SystemPage({super.key, this.active = true});
+
+  /// 是否处于可见 Tab：SSE 仅在激活时建连，切走立即断开（对齐 Web System.jsx）
+  final bool active;
 
   @override
   State<SystemPage> createState() => _SystemPageState();
@@ -21,63 +23,82 @@ class _SystemPageState extends State<SystemPage> {
   List<Map<String, dynamic>> _services = [];
   String? _error;
   String _procSort = 'mem';
-  Timer? _timer;
+
+  SystemStreamHandle? _stream;
+  Timer? _retryTimer;
 
   @override
   void initState() {
     super.initState();
-    _refresh();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _refresh());
+    if (widget.active) _connect();
+  }
+
+  @override
+  void didUpdateWidget(covariant SystemPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) {
+      _connect(); // 切回系统 Tab：重新建连
+    } else if (!widget.active && oldWidget.active) {
+      _disconnect(); // 切走：立即断开，零残留
+    }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _disconnect();
     super.dispose();
   }
 
-  Future<void> _refresh() async {
-    try {
-      final data = await Api.system();
-      if (mounted) {
-        setState(() {
-          _data = data;
-          _error = null;
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      final handled = await handleAuthError(context, e);
-      if (!handled && mounted) setState(() => _error = e.toString());
-      return;
-    }
-    try {
-      final hist = await Api.systemHistory();
-      if (mounted) {
-        setState(() {
-          _history = hist.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList();
-        });
-      }
-    } catch (_) {
-      // 历史数据拉取失败静默保留旧数据（趋势图不闪烁）
-    }
-    try {
-      final svc = await Api.services();
-      if (mounted) {
-        setState(() {
-          final s = svc['services'];
-          final p = svc['processes'];
-          _services = (s is List)
-              ? s.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
-              : [];
-          _processes = (p is List)
-              ? p.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
-              : [];
-        });
-      }
-    } catch (_) {
-      // 服务/进程状态失败静默保留旧数据
-    }
+  void _disconnect() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _stream?.cancel();
+    _stream = null;
+  }
+
+  void _connect() {
+    _disconnect();
+    _stream = Api.systemStream(
+      onSnapshot: _onSnapshot,
+      onError: (err) {
+        if (!mounted) return;
+        setState(() => _error = '连接已断开，正在重连…');
+      },
+      onDone: _scheduleReconnect,
+    );
+  }
+
+  void _scheduleReconnect() {
+    if (!mounted) return;
+    // 连接断开（或流结束）且 Tab 仍激活：5s 后自动重试
+    if (!widget.active) return;
+    _retryTimer?.cancel();
+    _retryTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted && widget.active) _connect();
+    });
+  }
+
+  void _onSnapshot(Map<String, dynamic> snapshot) {
+    if (!mounted) return;
+    final system = snapshot['system'];
+    final hist = snapshot['history'];
+    final servicesRaw = snapshot['services'];
+    final services = servicesRaw is Map ? servicesRaw : <String, dynamic>{};
+    setState(() {
+      _data = (system is Map) ? Map<String, dynamic>.from(system) : null;
+      _history = (hist is List)
+          ? hist.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
+          : [];
+      final s = services['services'];
+      final p = services['processes'];
+      _services = (s is List)
+          ? s.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
+          : [];
+      _processes = (p is List)
+          ? p.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
+          : [];
+      _error = null;
+    });
   }
 
   /* ============ 格式化 ============ */
@@ -137,12 +158,17 @@ class _SystemPageState extends State<SystemPage> {
   double _pct(dynamic v) => v is num ? v.toDouble() : 0.0;
   num _num(dynamic v) => v is num ? v : 0;
 
+  /// 手动刷新：重连 SSE 立即拉取最新快照
+  Future<void> _reconnect() async {
+    _connect();
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
     final data = _data;
     return RefreshIndicator(
-      onRefresh: _refresh,
+      onRefresh: () async => _reconnect(),
       color: c.accent,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),

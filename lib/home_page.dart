@@ -6,6 +6,7 @@ import 'blog_page.dart';
 import 'chat_page.dart';
 import 'command_palette.dart';
 import 'login_page.dart';
+import 'manage_page.dart';
 import 'reset_totp_page.dart';
 import 'system_page.dart';
 import 'theme.dart';
@@ -52,14 +53,15 @@ class _HomePageState extends State<HomePage> {
     final sp = await SharedPreferences.getInstance();
     final saved = sp.getString('admin_tab');
     if (!mounted) return;
-    final map = {'chat': 0, 'system': 1, 'version': 2, 'blog': 3};
+    // 旧版 Tab key 'chat'（聊天）兼容：按 'browse'（浏览）处理
+    final map = {'browse': 0, 'chat': 0, 'system': 1, 'version': 2, 'blog': 3, 'manage': 4};
     setState(() => _tab = map[saved] ?? 0);
   }
 
   Future<void> _selectTab(int i) async {
     setState(() => _tab = i);
     final sp = await SharedPreferences.getInstance();
-    const names = ['chat', 'system', 'version', 'blog'];
+    const names = ['browse', 'system', 'version', 'blog', 'manage'];
     await sp.setString('admin_tab', names[i]);
   }
 
@@ -132,14 +134,15 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               Expanded(
-                // IndexedStack：四个面板常驻挂载，切换不销毁聊天状态（流式/草稿/输入）
+                // IndexedStack：五个面板常驻挂载，切换不销毁浏览状态（已加载会话/消息）
                 child: IndexedStack(
                   index: _tab,
                   children: [
-                    ChatPage(active: _tab == 0, key: const ValueKey('chat')),
-                    const SystemPage(key: ValueKey('system')),
+                    BrowsePage(active: _tab == 0, key: const ValueKey('browse')),
+                    SystemPage(active: _tab == 1, key: const ValueKey('system')),
                     const VersionPage(key: ValueKey('version')),
                     const BlogPage(key: ValueKey('blog')),
+                    const ManagePage(key: ValueKey('manage')),
                   ],
                 ),
               ),
@@ -152,9 +155,9 @@ class _HomePageState extends State<HomePage> {
         onDestinationSelected: _selectTab,
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: '聊天',
+            icon: Icon(Icons.history),
+            selectedIcon: Icon(Icons.history),
+            label: '浏览',
           ),
           NavigationDestination(
             icon: Icon(Icons.monitor_heart_outlined),
@@ -170,6 +173,11 @@ class _HomePageState extends State<HomePage> {
             icon: Icon(Icons.edit_note),
             selectedIcon: Icon(Icons.edit_note),
             label: '博客',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
+            label: '管理',
           ),
         ],
       ),

@@ -122,6 +122,102 @@ class Api {
     return list is List ? list : [];
   }
 
+  /* ============ 历史会话浏览（只读） ============ */
+
+  /// GET /api/admin/history -> { sessions: [{ id, title, time, message_count }] }
+  static Future<Map<String, dynamic>> historySessions() async {
+    final res = await http.get(_uri(kApiBase, '/api/admin/history'), headers: _headers());
+    return _decode(res);
+  }
+
+  /// GET /api/admin/history/{id} -> { session: { id, title }, messages: [{ role, content, ts }] }
+  static Future<Map<String, dynamic>> historyMessages(String id) async {
+    final res = await http.get(
+      _uri(kApiBase, '/api/admin/history/${Uri.encodeComponent(id)}'),
+      headers: _headers(),
+    );
+    return _decode(res);
+  }
+
+  /* ============ 设备会话管理（认证中心转发） ============ */
+
+  /// GET /api/admin/sessions -> { sessions: [{ id, deviceName, ip, isLocal,
+  ///   location, userAgent, createdAt, lastSeenAt, expiresAt(秒), isCurrent }] }
+  static Future<List<Map<String, dynamic>>> sessions() async {
+    final res = await http.get(_uri(kApiBase, '/api/admin/sessions'), headers: _headers());
+    final data = _decode(res);
+    final list = data['sessions'];
+    return (list is List)
+        ? list.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
+        : [];
+  }
+
+  /// PUT /api/admin/sessions/{id}/name { deviceName }
+  static Future<void> sessionRename(String id, String deviceName) async {
+    final res = await http.put(
+      _uri(kApiBase, '/api/admin/sessions/${Uri.encodeComponent(id)}/name'),
+      headers: _headers(),
+      body: jsonEncode({'deviceName': deviceName}),
+    );
+    _decode(res);
+  }
+
+  /// DELETE /api/admin/sessions/{id}
+  static Future<void> sessionDelete(String id) async {
+    final res = await http.delete(
+      _uri(kApiBase, '/api/admin/sessions/${Uri.encodeComponent(id)}'),
+      headers: _headers(),
+    );
+    _decode(res);
+  }
+
+  /* ============ 接口令牌管理（与登录设备隔离） ============ */
+
+  /// GET /api/admin/api-tokens -> { tokens: [{ id, name, note, createdAt,
+  ///   expiresAt, lastUsedAt }] }（绝不含 token 明文）
+  static Future<List<Map<String, dynamic>>> apiTokens() async {
+    final res = await http.get(_uri(kApiBase, '/api/admin/api-tokens'), headers: _headers());
+    final data = _decode(res);
+    final list = data['tokens'];
+    return (list is List)
+        ? list.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
+        : [];
+  }
+
+  /// POST /api/admin/api-tokens { name, note, expiresInDays } -> { id, token, meta }
+  /// token 明文仅此一次返回
+  static Future<Map<String, dynamic>> apiTokenCreate({
+    required String name,
+    String note = '',
+    required int expiresInDays,
+  }) async {
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/api-tokens'),
+      headers: _headers(),
+      body: jsonEncode({'name': name, 'note': note, 'expiresInDays': expiresInDays}),
+    );
+    return _decode(res);
+  }
+
+  /// PATCH /api/admin/api-tokens/{id}，可选 { name, note, expiresInDays }
+  static Future<void> apiTokenUpdate(String id, Map<String, dynamic> patch) async {
+    final res = await http.patch(
+      _uri(kApiBase, '/api/admin/api-tokens/${Uri.encodeComponent(id)}'),
+      headers: _headers(),
+      body: jsonEncode(patch),
+    );
+    _decode(res);
+  }
+
+  /// DELETE /api/admin/api-tokens/{id}（吊销，立即失效）
+  static Future<void> apiTokenDelete(String id) async {
+    final res = await http.delete(
+      _uri(kApiBase, '/api/admin/api-tokens/${Uri.encodeComponent(id)}'),
+      headers: _headers(),
+    );
+    _decode(res);
+  }
+
   /* ============ 上传 / 下载 ============ */
 
   /// POST /api/admin/upload（multipart 字段名 file）-> {path}
@@ -284,6 +380,53 @@ class Api {
     return url;
   }
 
+  /* ============ SSE 实时流 ============ */
+
+  /// 建立 /api/admin/system/stream 长连接。服务端每 ~1s 推一条
+  /// `event: snapshot / data: {system, services, history}`。
+  /// 返回句柄，调用 cancel() 即断开（对齐 Web：Tab 激活才连、切走断开）。
+  static SystemStreamHandle systemStream({
+    required void Function(Map<String, dynamic> snapshot) onSnapshot,
+    void Function(String? error)? onError,
+    void Function()? onDone,
+  }) {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 15)
+      ..badCertificateCallback = (cert, host, port) => false;
+    final request = client.getUrl(_uri(kApiBase, '/api/admin/system/stream'));
+    final handle = SystemStreamHandle._(client);
+    handle._run(request, onSnapshot, onError, onDone);
+    return handle;
+  }
+
+  static String _errorOfStatus(int code) {
+    if (code == 401) {
+      _notifyAuthRequired();
+      return '未登录或登录已过期';
+    }
+    return 'SSE HTTP $code';
+  }
+
+  /// 解析单条 SSE 帧（event:/data: 行），非 snapshot 返回 null
+  static Map<String, dynamic>? _parseSseFrame(String frame) {
+    String? event;
+    String? data;
+    for (final line in frame.split('\n')) {
+      if (line.startsWith('event:')) {
+        event = line.substring(6).trim();
+      } else if (line.startsWith('data:')) {
+        data = line.substring(5).trim();
+      }
+    }
+    if (event != 'snapshot' || data == null) return null;
+    try {
+      final decoded = jsonDecode(data);
+      return (decoded is Map) ? Map<String, dynamic>.from(decoded) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /* ============ 通用 ============ */
 
   /// 解析数组响应（服务端直接返回 JSON 数组，如 system/history）
@@ -342,5 +485,97 @@ class Api {
       }
     } catch (_) {}
     return 'HTTP ${res.statusCode}';
+  }
+}
+
+/// SSE 长连接句柄：cancel() 断开流并释放连接
+class SystemStreamHandle {
+  SystemStreamHandle._(this._client);
+
+  final HttpClient _client;
+  HttpClientRequest? _request;
+  bool _cancelled = false;
+  bool _done = false;
+
+  Future<void> _run(
+    Future<HttpClientRequest> request,
+    void Function(Map<String, dynamic> snapshot) onSnapshot,
+    void Function(String? error)? onError,
+    void Function()? onDone,
+  ) async {
+    try {
+      final req = await request;
+      if (_cancelled) {
+        req.abort();
+        return;
+      }
+      _request = req;
+      req.headers.set('Authorization', 'Bearer ${Api.token}');
+      final res = await req.close();
+      if (res.statusCode != 200) {
+        if (!_cancelled) onError?.call(Api._errorOfStatus(res.statusCode));
+        if (!_cancelled) onDone?.call();
+        _done = true;
+        _client.close(force: true);
+        return;
+      }
+      // 按 \n\n 分帧解析 SSE
+      final transformer = _SseTransformer();
+      final subscription = res
+          .transform(utf8.decoder)
+          .transform(transformer)
+          .listen(
+            (frame) {
+              if (_cancelled) return;
+              final snapshot = Api._parseSseFrame(frame);
+              if (snapshot != null) onSnapshot(snapshot);
+            },
+            onError: (Object e) {
+              if (_cancelled) return;
+              onError?.call(e.toString());
+            },
+            onDone: () {
+              if (_cancelled) return;
+              onDone?.call();
+            },
+            cancelOnError: true,
+          );
+      await subscription.asFuture<void>().catchError((_) {});
+    } catch (e) {
+      if (!_cancelled) {
+        onError?.call(e.toString());
+        onDone?.call();
+      }
+    } finally {
+      _done = true;
+      _client.close(force: true);
+    }
+  }
+
+  /// 主动断开连接
+  Future<void> cancel() async {
+    if (_cancelled) return;
+    _cancelled = true;
+    _request?.abort();
+    _client.close(force: true);
+  }
+
+  bool get isDone => _done;
+}
+
+/// 将字节流按 SSE 帧（\n\n 分隔）切分
+class _SseTransformer extends StreamTransformerBase<String, String> {
+  @override
+  Stream<String> bind(Stream<String> stream) async* {
+    var buf = '';
+    await for (final chunk in stream) {
+      buf += chunk;
+      int idx;
+      while ((idx = buf.indexOf('\n\n')) != -1) {
+        final frame = buf.substring(0, idx);
+        buf = buf.substring(idx + 2);
+        if (frame.trim().isNotEmpty) yield frame;
+      }
+    }
   }
 }

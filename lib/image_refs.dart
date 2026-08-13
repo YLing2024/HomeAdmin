@@ -19,9 +19,12 @@ String normalizeImageRefPath(String raw) {
   if (p.length >= 2 && p[0] == p[p.length - 1] && '`"\' '.contains(p[0])) {
     p = p.substring(1, p.length - 1).trim();
   }
-  return p
+  p = p
       .replaceFirst(RegExp(r'''^[`"']+'''), '')
-      .replaceFirst(RegExp(r'''[`"',.;:)}\]]+$'''), '');
+      .replaceFirst(RegExp(r'''[`"',.;:)}\\]]+$'''), '');
+  // 路径形状守卫：真实路径必含 / 或 \（排除代码片段/正则文本里 @image: 后的乱匹配）
+  if (!p.contains('/') && !p.contains(r'\')) return '';
+  return p;
 }
 
 class ImageRefParseResult {
