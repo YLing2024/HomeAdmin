@@ -787,12 +787,8 @@ class TrendChart extends StatefulWidget {
 class _TrendChartState extends State<TrendChart> {
   static const int _window = 30;
   int _offset = 0;
-
-  bool get _following {
-    final len = widget.history.length;
-    if (len <= _window) return true;
-    return _offset + _window >= len;
-  }
+  // 跟随最新：初始为 true；用户平移离开最新后关闭，拖回末尾或点「回最新」恢复
+  bool _follow = true;
 
   @override
   Widget build(BuildContext context) {
@@ -800,9 +796,14 @@ class _TrendChartState extends State<TrendChart> {
     final history = widget.history;
     final len = history.length;
 
-    // 数据增长且处于跟随态：窗口自动右移
-    if (_following && len > _window) {
-      _offset = len - _window;
+    if (len > _window) {
+      if (_follow) {
+        // 跟随态：初始及每次数据更新都对齐最新（对齐 Web followRef）
+        _offset = len - _window;
+      } else {
+        // 非跟随：仅做边界修正，保持当前位置不跳动
+        _offset = _offset.clamp(0, len - _window);
+      }
     }
 
     final start = len <= _window ? 0 : _offset.clamp(0, len - _window);
@@ -864,8 +865,13 @@ class _TrendChartState extends State<TrendChart> {
                   onHorizontalDragEnd: (_) {},
                   onHorizontalDragUpdate: (d) {
                     if (len <= _window) return;
-                    final next = _offset - (d.primaryDelta! / 6).round();
-                    setState(() => _offset = next.clamp(0, len - _window));
+                    final next = (_offset - (d.primaryDelta! / 6).round())
+                        .clamp(0, len - _window);
+                    setState(() {
+                      _offset = next;
+                      // 拖回最末窗口即恢复跟随
+                      _follow = next >= len - _window;
+                    });
                   },
                   child: CustomPaint(
                     size: Size.infinite,
@@ -881,13 +887,16 @@ class _TrendChartState extends State<TrendChart> {
                 ),
               ),
             ),
-            if (!_following && len > _window)
+            if (!_follow && len > _window)
               Align(
                 alignment: Alignment.centerRight,
                 child: Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: InkWell(
-                    onTap: () => setState(() => _offset = len - _window),
+                    onTap: () => setState(() {
+                      _follow = true;
+                      _offset = len - _window;
+                    }),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(

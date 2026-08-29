@@ -274,7 +274,7 @@ class _BlogPageState extends State<BlogPage> {
                     children: [
                       Text(
                         title,
-                        maxLines: 2,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: c.fg,
@@ -320,26 +320,34 @@ class _BlogPageState extends State<BlogPage> {
             ),
             const SizedBox(height: 8),
             if (tags.isNotEmpty) ...[
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: tags
-                    .whereType<String>()
-                    .map(
-                      (t) => Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: c.surface2,
-                          border: Border.all(color: c.border),
-                          borderRadius: BorderRadius.circular(2),
+              // 不换行，超宽时横向滚动（对齐 Web blog-tags: flex-wrap: nowrap）
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: tags
+                      .whereType<String>()
+                      .map(
+                        (t) => Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: c.surface2,
+                              border: Border.all(color: c.border),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                            child: Text(
+                              t,
+                              style: TextStyle(color: c.muted, fontSize: 11),
+                            ),
+                          ),
                         ),
-                        child: Text(
-                          t,
-                          style: TextStyle(color: c.muted, fontSize: 11),
-                        ),
-                      ),
-                    )
-                    .toList(),
+                      )
+                      .toList(),
+                ),
               ),
               const SizedBox(height: 6),
             ],
@@ -415,6 +423,8 @@ class _BlogPageState extends State<BlogPage> {
         children: [
           Text(
             (col['name'] ?? '-').toString(),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: c.fg,
               fontSize: 14,
@@ -556,6 +566,7 @@ class _PostEditorState extends State<_PostEditor> {
   String? _notice;
   Timer? _draftTimer;
   Timer? _noticeTimer;
+  bool _userEdited = false; // 打开编辑器后用户是否已输入（对齐 Web：恢复不覆盖已输入内容）
 
   bool get _isNew => widget.post == null;
   String get _draftKey => 'blog_draft_${_isNew ? 'new' : widget.post!['id']}';
@@ -588,7 +599,9 @@ class _PostEditorState extends State<_PostEditor> {
     super.dispose();
   }
 
+  // 防抖自动保存（独立于恢复：随输入触发，恢复只在 initState 执行一次）
   void _markChanged() {
+    _userEdited = true;
     _draftTimer?.cancel();
     _draftTimer = Timer(const Duration(milliseconds: 1500), _saveDraft);
   }
@@ -600,6 +613,9 @@ class _PostEditorState extends State<_PostEditor> {
     try {
       final saved = Map<String, dynamic>.from(jsonDecode(raw) as Map);
       if (!mounted) return;
+      // 读取草稿期间用户可能已开始输入（SharedPreferences 首次加载有延迟）：
+      // 已有输入则放弃恢复，避免旧草稿覆盖输入内容
+      if (_userEdited) return;
       setState(() {
         _title.text = saved['title']?.toString() ?? _title.text;
         _slug.text = saved['slug']?.toString() ?? _slug.text;
@@ -619,19 +635,18 @@ class _PostEditorState extends State<_PostEditor> {
   }
 
   Future<void> _saveDraft() async {
+    // 先同步快照字段值再异步等待，dispose 时保存不会读到已释放的控制器
+    final data = jsonEncode({
+      'title': _title.text,
+      'slug': _slug.text,
+      'tags': _tags.text,
+      'excerpt': _excerpt.text,
+      'content': _content.text,
+      'collection_id': _collectionId,
+      'published': _published,
+    });
     final sp = await SharedPreferences.getInstance();
-    await sp.setString(
-      _draftKey,
-      jsonEncode({
-        'title': _title.text,
-        'slug': _slug.text,
-        'tags': _tags.text,
-        'excerpt': _excerpt.text,
-        'content': _content.text,
-        'collection_id': _collectionId,
-        'published': _published,
-      }),
-    );
+    await sp.setString(_draftKey, data);
   }
 
   Future<void> _clearDraft() async {
