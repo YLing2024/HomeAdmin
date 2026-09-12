@@ -73,6 +73,7 @@ class _CommandPaletteDialogState extends State<CommandPaletteDialog> {
       PaletteItem('version', '跳到版本页', '查看软件版本', () => widget.onSwitchTab(2)),
       PaletteItem('blog', '跳到博客页', '管理博客文章', () => widget.onSwitchTab(3)),
       PaletteItem('manage', '跳到管理页', '设备与接口令牌', () => widget.onSwitchTab(4)),
+      PaletteItem('terminal', '打开终端', '服务器 Web 终端', () => widget.onSwitchTab(5)),
       PaletteItem('browse', '跳到浏览页', '查看历史会话', () => widget.onSwitchTab(0)),
       PaletteItem('pwd', '重置验证器', '更换 TOTP 验证器', widget.onShowReset),
       PaletteItem('logout', '退出登录', '安全退出', widget.onLogout),

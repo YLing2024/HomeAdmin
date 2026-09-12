@@ -310,9 +310,82 @@ class _SystemPageState extends State<SystemPage> {
           const SizedBox(height: 10),
           MetricBar(percent: memPercent),
           const SizedBox(height: 10),
-          _kv(c, '已用', _fmtBytes(_num(mem['used']))),
-          _kv(c, '剩余', _fmtBytes(_num(mem['free']))),
-          _kv(c, '总计', _fmtBytes(_num(mem['total']))),
+          _kv(c, '已用（不含缓存）', _fmtBytes(_num(mem['used']))),
+          _kv(
+            c,
+            '可用',
+            mem['available'] == null ? '—' : _fmtBytes(_num(mem['available'])),
+          ),
+          _kv(
+            c,
+            '其中缓存（可回收）',
+            mem['buffCache'] == null ? '—' : _fmtBytes(_num(mem['buffCache'])),
+          ),
+          _kv(
+            c,
+            '剩余 / 总计',
+            '${_fmtBytes(_num(mem['free']))} / ${_fmtBytes(_num(mem['total']))}',
+          ),
+        ],
+      ),
+    );
+
+    // Swap 卡（对齐 Web）：无 swap 时显示 0% + 备注
+    final swapTotal = _num(mem['swapTotal']);
+    final hasSwap = swapTotal > 0;
+    final zram =
+        mem['zram'] is Map ? Map<String, dynamic>.from(mem['zram'] as Map) : null;
+    final swapPercent = _pct(mem['swapPercent']);
+    final swapCard = PanelCard(
+      title: 'Swap',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            hasSwap ? '${swapPercent.toStringAsFixed(1)}%' : '0%',
+            style: TextStyle(
+              color: hasSwap ? c.fg : c.muted,
+              fontSize: 38,
+              fontWeight: FontWeight.w200,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+          const SizedBox(height: 10),
+          MetricBar(percent: hasSwap ? swapPercent : 0),
+          const SizedBox(height: 10),
+          if (hasSwap) ...[
+            _kv(c, '已用', _fmtBytes(_num(mem['swapUsed']))),
+            _kv(
+              c,
+              '剩余 / 总计',
+              '${_fmtBytes(_num(mem['swapFree']))} / ${_fmtBytes(_num(mem['swapTotal']))}',
+            ),
+            _kv(
+              c,
+              zram == null ? 'zram' : 'zram (${zram['algorithm'] ?? 'lz4'})',
+              zram == null
+                  ? '无'
+                  : '${_fmtBytes(_num(zram['used']))} / ${_fmtBytes(_num(zram['total']))}',
+            ),
+          ] else ...[
+            _kv(c, 'zram', '无'),
+            _kv(c, '备注', '本机未配置 swap'),
+          ],
+        ],
+      ),
+    );
+
+    // PSI 压力卡（对齐 Web）：some/full avg10，压力越大越警示
+    final psi = data['psi'] is Map ? data['psi'] as Map : const {};
+    final psiCard = PanelCard(
+      title: 'PSI 压力',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _psiRow(c, '内存 (memory)', psi['memory']),
+          _psiRow(c, 'CPU', psi['cpu']),
+          _psiRow(c, 'I/O', psi['io']),
+          _kv(c, '说明', 'avg10 压力 · some/full'),
         ],
       ),
     );
@@ -378,6 +451,10 @@ class _SystemPageState extends State<SystemPage> {
               const SizedBox(height: 12),
               memCard,
               const SizedBox(height: 12),
+              swapCard,
+              const SizedBox(height: 12),
+              psiCard,
+              const SizedBox(height: 12),
               sysCard,
               const SizedBox(height: 12),
               netCard,
@@ -394,6 +471,15 @@ class _SystemPageState extends State<SystemPage> {
                 Expanded(child: cpuCard),
                 const SizedBox(width: 12),
                 Expanded(child: memCard),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: swapCard),
+                const SizedBox(width: 12),
+                Expanded(child: psiCard),
               ],
             ),
             const SizedBox(height: 12),
@@ -647,11 +733,24 @@ class _SystemPageState extends State<SystemPage> {
         const BlockTitle('趋势'),
         const SizedBox(height: 8),
         TrendChart(
-          title: 'CPU / 内存（%）',
+          title: 'CPU / 内存 / Swap（%）',
           history: _history,
           series: const [
-            TrendSeries('cpu', 'CPU', accent: true),
-            TrendSeries('mem_percent', '内存', accent: false),
+            TrendSeries('mem_percent', '物理内存', tone: TrendTone.accent),
+            TrendSeries('swap_percent', 'Swap', tone: TrendTone.ok),
+          ],
+          yMax: 100,
+          yLabel: '%',
+          fmtValue: (v) => '${v.toStringAsFixed(1)}%',
+        ),
+        const SizedBox(height: 12),
+        TrendChart(
+          title: 'PSI 压力 · some avg10（%）',
+          history: _history,
+          series: const [
+            TrendSeries('psi_mem_avg10', '内存', tone: TrendTone.danger),
+            TrendSeries('psi_cpu_avg10', 'CPU', tone: TrendTone.accent),
+            TrendSeries('psi_io_avg10', 'I/O', tone: TrendTone.muted),
           ],
           yMax: 100,
           yLabel: '%',
@@ -662,8 +761,8 @@ class _SystemPageState extends State<SystemPage> {
           title: '网速（/s）',
           history: _history,
           series: const [
-            TrendSeries('net_rx_rate', '↓ 下载', accent: true),
-            TrendSeries('net_tx_rate', '↑ 上传', accent: false),
+            TrendSeries('net_rx_rate', '↓ 下载', tone: TrendTone.accent),
+            TrendSeries('net_tx_rate', '↑ 上传', tone: TrendTone.muted),
           ],
           fmtValue: (v) => _fmtRate(v),
         ),
@@ -672,8 +771,8 @@ class _SystemPageState extends State<SystemPage> {
           title: '磁盘 I/O（/s）',
           history: _history,
           series: const [
-            TrendSeries('disk_io_read', '读', accent: true),
-            TrendSeries('disk_io_write', '写', accent: false),
+            TrendSeries('disk_io_read', '读', tone: TrendTone.accent),
+            TrendSeries('disk_io_write', '写', tone: TrendTone.muted),
           ],
           fmtValue: (v) => _fmtRate(v),
         ),
@@ -683,7 +782,27 @@ class _SystemPageState extends State<SystemPage> {
 
   /* ============ 通用小组件 ============ */
 
-  Widget _kv(AppColors c, String label, String value, {bool amber = false}) {
+  /// PSI 行（对齐 Web PsiRow）：显示 some/full 的 avg10，压力越大越警示
+  Widget _psiRow(AppColors c, String label, dynamic raw) {
+    final o = raw is Map ? raw : null;
+    final some = (o != null && o['some'] is Map)
+        ? o['some'] as Map
+        : null;
+    if (some == null) return _kv(c, label, '—');
+    final full = o!['full'] is Map ? o['full'] as Map : null;
+    final s = _pct(some['avg10']);
+    final text = 'some ${s.toStringAsFixed(1)}% · '
+        'full ${full == null ? '—' : '${_pct(full['avg10']).toStringAsFixed(1)}%'}';
+    return _kv(
+      c,
+      label,
+      text,
+      color: s >= 50 ? c.danger : (s >= 30 ? c.warn : null),
+    );
+  }
+
+  Widget _kv(AppColors c, String label, String value,
+      {bool amber = false, Color? color}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
@@ -701,7 +820,7 @@ class _SystemPageState extends State<SystemPage> {
               value,
               textAlign: TextAlign.right,
               style: TextStyle(
-                color: amber ? c.accent : c.fg,
+                color: color ?? (amber ? c.accent : c.fg),
                 fontSize: 12,
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
@@ -755,11 +874,27 @@ class _SystemPageState extends State<SystemPage> {
 
 /* ============ 趋势图（纯 CustomPainter，无图表库，对齐 Web 手写 SVG） ============ */
 
+/// 趋势线配色（对齐 Web CSS 变量）：accent 琥珀 / muted 中性灰 / ok 绿 / danger 红
+enum TrendTone { accent, muted, ok, danger }
+
+Color _toneColor(AppColors c, TrendTone tone) {
+  switch (tone) {
+    case TrendTone.accent:
+      return c.accent;
+    case TrendTone.muted:
+      return c.muted;
+    case TrendTone.ok:
+      return c.ok;
+    case TrendTone.danger:
+      return c.danger;
+  }
+}
+
 class TrendSeries {
   final String key;
   final String label;
-  final bool accent;
-  const TrendSeries(this.key, this.label, {required this.accent});
+  final TrendTone tone;
+  const TrendSeries(this.key, this.label, {this.tone = TrendTone.muted});
 }
 
 class TrendChart extends StatefulWidget {
@@ -827,7 +962,7 @@ class _TrendChartState extends State<TrendChart> {
                         width: 8,
                         height: 8,
                         decoration: BoxDecoration(
-                          color: s.accent ? c.accent : c.muted,
+                          color: _toneColor(c, s.tone),
                           borderRadius: BorderRadius.circular(1),
                         ),
                       ),
@@ -1018,7 +1153,7 @@ class _TrendPainter extends CustomPainter {
 
     for (final s in series) {
       final linePaint = Paint()
-        ..color = s.accent ? c.accent : c.muted
+        ..color = _toneColor(c, s.tone)
         ..strokeWidth = 1.6
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round

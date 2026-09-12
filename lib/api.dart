@@ -253,6 +253,76 @@ class Api {
     _decode(res);
   }
 
+  /* ============ 服务器终端（ttyd + tmux，对齐 Web Terminal.jsx） ============ */
+
+  /// POST /api/admin/term/unlock { password } -> { ticket, expiresIn }
+  /// 注意：口令错误时服务端返回 401，这里不能走 _decode 的「登录过期」回调，
+  /// 否则输错口令会被全局登出；429 时 ApiException.retryAfter 为锁定剩余秒数。
+  static Future<Map<String, dynamic>> termUnlock(String password) async {
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/term/unlock'),
+      headers: _headers(),
+      body: jsonEncode({'password': password}),
+    );
+    Map<String, dynamic> data;
+    try {
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+      data = (decoded is Map) ? Map<String, dynamic>.from(decoded) : {};
+    } catch (_) {
+      data = {};
+    }
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw ApiException(
+        (data['error'] as String?) ?? 'HTTP ${res.statusCode}',
+        code: res.statusCode,
+        retryAfter: data['retryAfter'] is num
+            ? (data['retryAfter'] as num).toInt()
+            : null,
+      );
+    }
+    return data;
+  }
+
+  /// GET /api/admin/term/sessions -> { sessions: [{ name, attached, activity }] }
+  static Future<List<Map<String, dynamic>>> termSessions() async {
+    final res = await http.get(
+      _uri(kApiBase, '/api/admin/term/sessions'),
+      headers: _headers(),
+    );
+    final data = _decode(res);
+    final list = data['sessions'];
+    return (list is List)
+        ? list.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
+        : [];
+  }
+
+  /// DELETE /api/admin/term/sessions/{name}（关闭单个会话，关标签时调用）
+  static Future<void> termCloseSession(String name) async {
+    final res = await http.delete(
+      _uri(kApiBase, '/api/admin/term/sessions/${Uri.encodeComponent(name)}'),
+      headers: _headers(),
+    );
+    _decode(res);
+  }
+
+  /// POST /api/admin/term/sessions/close { names }（批量关闭，锁定/离开时调用）
+  static Future<void> termCloseSessions(List<String> names) async {
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/term/sessions/close'),
+      headers: _headers(),
+      body: jsonEncode({'names': names}),
+    );
+    _decode(res);
+  }
+
+  /// 终端 WebView 地址：token 供探针鉴权；两个 arg 按 ttyd --url-arg 顺序
+  /// 传给服务端 wrapper（$1=会话名，$2=票据）
+  static String termUrl(String name, String ticket) =>
+      Uri.parse('$kApiBase/term/').replace(queryParameters: {
+        'token': _token,
+        'arg': [name, ticket],
+      }).toString();
+
   /* ============ 上传 / 下载 ============ */
 
   /// POST /api/admin/upload（multipart 字段名 file）-> {path}

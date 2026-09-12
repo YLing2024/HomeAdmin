@@ -251,6 +251,21 @@ ThemeData buildTheme(Brightness brightness) {
       ),
     ),
     dividerTheme: DividerThemeData(color: c.border, thickness: 0.5),
+    // 细发丝滚动条（对齐 Web c26999e：4px 直角滑块，border → hover muted → 拖拽 accent）
+    scrollbarTheme: ScrollbarThemeData(
+      thickness: const WidgetStatePropertyAll(4),
+      radius: Radius.zero,
+      crossAxisMargin: 2,
+      trackColor: const WidgetStatePropertyAll(Colors.transparent),
+      trackBorderColor: const WidgetStatePropertyAll(Colors.transparent),
+      thumbColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.dragged)
+            ? c.accent
+            : states.contains(WidgetState.hovered)
+                ? c.muted
+                : c.border,
+      ),
+    ),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: c.surface2,
       contentTextStyle: TextStyle(color: c.fg),

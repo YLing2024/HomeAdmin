@@ -9,6 +9,7 @@ import 'login_page.dart';
 import 'manage_page.dart';
 import 'reset_totp_page.dart';
 import 'system_page.dart';
+import 'terminal_page.dart';
 import 'theme.dart';
 import 'version_page.dart';
 
@@ -54,14 +55,22 @@ class _HomePageState extends State<HomePage> {
     final saved = sp.getString('admin_tab');
     if (!mounted) return;
     // 旧版 Tab key 'chat'（聊天）兼容：按 'browse'（浏览）处理
-    final map = {'browse': 0, 'chat': 0, 'system': 1, 'version': 2, 'blog': 3, 'manage': 4};
+    final map = {
+      'browse': 0,
+      'chat': 0,
+      'system': 1,
+      'version': 2,
+      'blog': 3,
+      'manage': 4,
+      'terminal': 5,
+    };
     setState(() => _tab = map[saved] ?? 0);
   }
 
   Future<void> _selectTab(int i) async {
     setState(() => _tab = i);
     final sp = await SharedPreferences.getInstance();
-    const names = ['browse', 'system', 'version', 'blog', 'manage'];
+    const names = ['browse', 'system', 'version', 'blog', 'manage', 'terminal'];
     await sp.setString('admin_tab', names[i]);
   }
 
@@ -134,7 +143,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               Expanded(
-                // IndexedStack：五个面板常驻挂载，切换不销毁浏览状态（已加载会话/消息）
+                // IndexedStack：六个面板常驻挂载，切换不销毁浏览状态（已加载会话/消息）
                 child: IndexedStack(
                   index: _tab,
                   children: [
@@ -143,6 +152,7 @@ class _HomePageState extends State<HomePage> {
                     const VersionPage(key: ValueKey('version')),
                     const BlogPage(key: ValueKey('blog')),
                     const ManagePage(key: ValueKey('manage')),
+                    TerminalPage(active: _tab == 5, key: const ValueKey('terminal')),
                   ],
                 ),
               ),
@@ -178,6 +188,11 @@ class _HomePageState extends State<HomePage> {
             icon: Icon(Icons.settings_outlined),
             selectedIcon: Icon(Icons.settings),
             label: '管理',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.terminal_outlined),
+            selectedIcon: Icon(Icons.terminal),
+            label: '终端',
           ),
         ],
       ),
