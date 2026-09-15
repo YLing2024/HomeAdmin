@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
 import 'login_page.dart';
@@ -272,14 +273,19 @@ class _BlogPageState extends State<BlogPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: c.fg,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
+                      InkWell(
+                        onTap: () => _openPost(p),
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: c.fg,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            decoration: TextDecoration.underline,
+                            decorationColor: c.accentBorder,
+                          ),
                         ),
                       ),
                       if (collection != null) ...[
@@ -389,6 +395,40 @@ class _BlogPageState extends State<BlogPage> {
     }
   }
 
+  /* ============ 打开文章 / 合集页 ============ */
+
+  /// 标题即入口（对齐 Web BlogAdmin.openPost）：
+  /// 已发布 → 公开地址；草稿 → 先取带预览令牌的链接再打开。
+  /// 接口入参始终是数字 id，public_id 只用于拼 URL。
+  Future<void> _openPost(Map<String, dynamic> p) async {
+    final key = (p['public_id'] ?? p['slug'] ?? '').toString().trim();
+    final id = p['id'];
+    try {
+      if (p['published'] == true) {
+        if (key.isEmpty) return;
+        await _openExternal(Api.absoluteUrl('/blog/$key'));
+        return;
+      }
+      if (id is! int) return;
+      final data = await Api.blogPostPreviewLink(id);
+      final url = (data['url'] ?? '').toString().trim();
+      if (url.isEmpty) return;
+      await _openExternal(Api.absoluteUrl(url));
+    } catch (e) {
+      if (!mounted) return;
+      final handled = await handleAuthError(context, e);
+      if (!handled && mounted) _toastError('打开文章失败：${e.toString()}');
+    }
+  }
+
+  Future<void> _openCollection(Map<String, dynamic> col) async {
+    final key = (col['public_id'] ?? col['slug'] ?? '').toString().trim();
+    if (key.isEmpty) return;
+    await _openExternal(Api.absoluteUrl('/blog/collections/$key'));
+  }
+
+  Future<void> _openExternal(String url) => _launchUrl(context, url);
+
   /* ============ 合集列表 ============ */
 
   Widget _collectionsList(AppColors c) {
@@ -421,14 +461,19 @@ class _BlogPageState extends State<BlogPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            (col['name'] ?? '-').toString(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: c.fg,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
+          InkWell(
+            onTap: () => _openCollection(col),
+            child: Text(
+              (col['name'] ?? '-').toString(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: c.fg,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                decoration: TextDecoration.underline,
+                decorationColor: c.accentBorder,
+              ),
             ),
           ),
           const SizedBox(height: 4),
@@ -533,6 +578,49 @@ class _BlogPageState extends State<BlogPage> {
   }
 }
 
+/// 用系统浏览器打开链接，失败给出提示（列表、编辑器预览链接共用）。
+Future<void> _launchUrl(BuildContext context, String url) async {
+  try {
+    final ok = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!ok && context.mounted) _snackError(context, '无法打开链接');
+  } catch (_) {
+    if (context.mounted) _snackError(context, '无法打开链接');
+  }
+}
+
+void _snackError(BuildContext context, String msg) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(msg, style: TextStyle(color: context.c.danger)),
+      behavior: SnackBarBehavior.floating,
+    ),
+  );
+}
+
+/// 只读标识展示（文章 ID / 合集 ID）：public_id 是 19 位字符串，严禁转数字。
+Widget _readonlyValue(AppColors c, String value, String hint) {
+  final v = value.trim();
+  return Container(
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+    decoration: BoxDecoration(
+      color: c.surface2,
+      border: Border.all(color: c.border),
+    ),
+    child: Text(
+      v.isEmpty ? hint : v,
+      style: TextStyle(
+        color: v.isEmpty ? c.muted : c.fg,
+        fontSize: 13,
+        fontFamily: v.isEmpty ? null : 'monospace',
+      ),
+    ),
+  );
+}
+
 /* ============ 文章编辑器 ============ */
 
 class _PostEditor extends StatefulWidget {
@@ -554,7 +642,6 @@ class _PostEditor extends StatefulWidget {
 
 class _PostEditorState extends State<_PostEditor> {
   late final TextEditingController _title;
-  late final TextEditingController _slug;
   late final TextEditingController _tags;
   late final TextEditingController _excerpt;
   late final TextEditingController _content;
@@ -576,7 +663,6 @@ class _PostEditorState extends State<_PostEditor> {
     super.initState();
     final p = widget.post;
     _title = TextEditingController(text: p?['title']?.toString() ?? '');
-    _slug = TextEditingController(text: p?['slug']?.toString() ?? '');
     _tags = TextEditingController(text: (p?['tags'] as List?)?.join(', ') ?? '');
     _excerpt = TextEditingController(text: p?['excerpt']?.toString() ?? '');
     _content = TextEditingController(text: p?['content']?.toString() ?? '');
@@ -592,7 +678,6 @@ class _PostEditorState extends State<_PostEditor> {
     _noticeTimer?.cancel();
     _saveDraft();
     _title.dispose();
-    _slug.dispose();
     _tags.dispose();
     _excerpt.dispose();
     _content.dispose();
@@ -618,7 +703,6 @@ class _PostEditorState extends State<_PostEditor> {
       if (_userEdited) return;
       setState(() {
         _title.text = saved['title']?.toString() ?? _title.text;
-        _slug.text = saved['slug']?.toString() ?? _slug.text;
         _tags.text = saved['tags']?.toString() ?? _tags.text;
         _excerpt.text = saved['excerpt']?.toString() ?? _excerpt.text;
         _content.text = saved['content']?.toString() ?? _content.text;
@@ -638,7 +722,6 @@ class _PostEditorState extends State<_PostEditor> {
     // 先同步快照字段值再异步等待，dispose 时保存不会读到已释放的控制器
     final data = jsonEncode({
       'title': _title.text,
-      'slug': _slug.text,
       'tags': _tags.text,
       'excerpt': _excerpt.text,
       'content': _content.text,
@@ -668,7 +751,6 @@ class _PostEditorState extends State<_PostEditor> {
         .toList();
     final body = {
       'title': title,
-      'slug': _slug.text.trim(),
       'tags': tags,
       'excerpt': _excerpt.text.trim(),
       'content': _content.text,
@@ -703,7 +785,8 @@ class _PostEditorState extends State<_PostEditor> {
       if (picked == null) return;
       final url = await Api.blogUploadImage(File(picked.path), picked.name);
       if (!mounted) return;
-      final mdText = '![](https://zhangyunling.cn$url)';
+      // 存相对路径，换域名也正确；预览与公开页各自拼上基址（对齐 Web）
+      final mdText = '![]($url)';
       final sel = _content.selection;
       final start = sel.isValid ? sel.start : _content.text.length;
       final end = sel.isValid ? sel.end : _content.text.length;
@@ -767,10 +850,10 @@ class _PostEditorState extends State<_PostEditor> {
           decoration: const InputDecoration(hintText: '文章标题'),
         )),
         const SizedBox(height: 12),
-        _field(c, 'SLUG', TextField(
-          controller: _slug,
-          onChanged: (_) => _markChanged(),
-          decoration: const InputDecoration(hintText: '留空自动生成（如 my-first-post）'),
+        _field(c, '文章 ID', _readonlyValue(
+          c,
+          widget.post?['public_id']?.toString() ?? '',
+          '保存后自动生成',
         )),
         const SizedBox(height: 12),
         _field(c, '标签', TextField(
@@ -786,7 +869,7 @@ class _PostEditorState extends State<_PostEditor> {
           decoration: const InputDecoration(hintText: '列表页显示的摘要'),
         )),
         const SizedBox(height: 12),
-        _field(c, '合集', InputDecorator(
+        _field(c, '所属合集', InputDecorator(
           decoration: const InputDecoration(),
           child: DropdownButtonHideUnderline(
             child: DropdownButton<int?>(
@@ -848,6 +931,25 @@ class _PostEditorState extends State<_PostEditor> {
               data: _content.text,
               selectable: true,
               softLineBreak: true,
+              // 相对路径图片（/api/blog/uploads/xxx.png）拼上 API 基址再加载
+              sizedImageBuilder: (config) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Image.network(
+                  Api.absoluteUrl(config.uri.toString()),
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => Text(
+                    config.alt == null || config.alt!.isEmpty
+                        ? '图片加载失败'
+                        : config.alt!,
+                    style: TextStyle(color: c.muted, fontSize: 12),
+                  ),
+                ),
+              ),
+              onTapLink: (text, href, title) {
+                if (href != null && href.isNotEmpty) {
+                  _launchUrl(context, Api.absoluteUrl(href));
+                }
+              },
               styleSheet: MarkdownStyleSheet(
                 p: TextStyle(color: c.fg, fontSize: 15, height: 1.7),
                 code: TextStyle(
@@ -861,16 +963,37 @@ class _PostEditorState extends State<_PostEditor> {
                   border: Border.all(color: c.border),
                 ),
                 codeblockPadding: const EdgeInsets.all(10),
+                // 长表格横向滚动，不撑破窄屏布局
+                tableColumnWidth: const IntrinsicColumnWidth(),
                 tableBorder: TableBorder.all(color: c.border),
                 tableHead: TextStyle(
                   color: c.fg,
                   fontWeight: FontWeight.w600,
+                ),
+                h1: TextStyle(
+                  color: c.fg,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
                 ),
                 h2: TextStyle(
                   color: c.fg,
                   fontSize: 22,
                   fontWeight: FontWeight.w700,
                 ),
+                h3: TextStyle(
+                  color: c.fg,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
+                a: TextStyle(
+                  color: c.accent,
+                  decoration: TextDecoration.underline,
+                ),
+                listBullet: TextStyle(color: c.muted, fontSize: 15),
+                blockquoteDecoration: BoxDecoration(
+                  border: Border(left: BorderSide(color: c.accentBorder, width: 3)),
+                ),
+                blockquotePadding: const EdgeInsets.fromLTRB(12, 4, 0, 4),
               ),
             ),
           )
@@ -1016,7 +1139,6 @@ class _CollectionEditor extends StatefulWidget {
 
 class _CollectionEditorState extends State<_CollectionEditor> {
   late final TextEditingController _name;
-  late final TextEditingController _slug;
   late final TextEditingController _desc;
   bool _saving = false;
   String? _error;
@@ -1028,14 +1150,12 @@ class _CollectionEditorState extends State<_CollectionEditor> {
     super.initState();
     final c = widget.collection;
     _name = TextEditingController(text: c?['name']?.toString() ?? '');
-    _slug = TextEditingController(text: c?['slug']?.toString() ?? '');
     _desc = TextEditingController(text: c?['description']?.toString() ?? '');
   }
 
   @override
   void dispose() {
     _name.dispose();
-    _slug.dispose();
     _desc.dispose();
     super.dispose();
   }
@@ -1048,7 +1168,6 @@ class _CollectionEditorState extends State<_CollectionEditor> {
     }
     final body = {
       'name': name,
-      'slug': _slug.text.trim(),
       'description': _desc.text.trim(),
     };
     setState(() {
@@ -1125,7 +1244,7 @@ class _CollectionEditorState extends State<_CollectionEditor> {
         ),
         const SizedBox(height: 12),
         Text(
-          'SLUG',
+          '合集 ID',
           style: TextStyle(
             color: c.muted,
             fontSize: 11,
@@ -1134,9 +1253,10 @@ class _CollectionEditorState extends State<_CollectionEditor> {
           ),
         ),
         const SizedBox(height: 6),
-        TextField(
-          controller: _slug,
-          decoration: const InputDecoration(hintText: '留空自动生成'),
+        _readonlyValue(
+          c,
+          widget.collection?['public_id']?.toString() ?? '',
+          '保存后自动生成',
         ),
         const SizedBox(height: 12),
         Text(

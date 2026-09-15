@@ -359,6 +359,90 @@ class Api {
   static String downloadUrl(String path) =>
       _uri(kApiBase, '/api/admin/download', {'path': path, 'token': _token}).toString();
 
+  /// 把服务端返回的相对路径（图片 / 预览链接）拼成绝对地址；
+  /// 已是 http(s)、data 等带 scheme 的地址原样返回。
+  static String absoluteUrl(String path) {
+    final p = path.trim();
+    if (p.isEmpty) return p;
+    final uri = Uri.tryParse(p);
+    if (uri != null && uri.hasScheme) return p;
+    return p.startsWith('/') ? '$kApiBase$p' : '$kApiBase/$p';
+  }
+
+  /* ============ 文件区（对齐 Web Files.jsx / admin-server 文件路由） ============ */
+
+  /// GET /api/admin/files?path= -> { path, parent, entries: [{name, type, size, mtime}] }
+  /// path 为相对文件区根目录的路径，根目录为 ''（越界由后端拦截）。
+  /// _uri 的 queryParameters 走 Uri.encodeQueryComponent，`lost+found` 等名称编码正确。
+  static Future<Map<String, dynamic>> fileList(String path) async {
+    final res = await http.get(
+      _uri(kApiBase, '/api/admin/files', {'path': path}),
+      headers: _headers(),
+    );
+    return _decode(res);
+  }
+
+  /// POST /api/admin/files/mkdir { path, name }
+  static Future<void> fileMkdir(String dir, String name) async {
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/files/mkdir'),
+      headers: _headers(),
+      body: jsonEncode({'path': dir, 'name': name}),
+    );
+    _decode(res);
+  }
+
+  /// POST /api/admin/files/rename { path, name }
+  static Future<void> fileRename(String path, String name) async {
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/files/rename'),
+      headers: _headers(),
+      body: jsonEncode({'path': path, 'name': name}),
+    );
+    _decode(res);
+  }
+
+  /// DELETE /api/admin/files?path=（目录递归删除）
+  static Future<void> fileDelete(String path) async {
+    final res = await http.delete(
+      _uri(kApiBase, '/api/admin/files', {'path': path}),
+      headers: _headers(),
+    );
+    _decode(res);
+  }
+
+  /// 文件下载 URL（token 走查询参数，供 url_launcher 打开；<a>/浏览器无法带自定义头）
+  static String fileDownloadUrl(String path) => _uri(
+        kApiBase,
+        '/api/admin/files/download',
+        {'path': path, 'token': _token},
+      ).toString();
+
+  /// POST /api/admin/files/upload?path=（multipart 字段名 file，上限 500MB）
+  /// onProgress 回调已发送字节数（HTTP 段），落盘耗时可配合 99% 文案；
+  /// abortTrigger 完成即中断上传（取消按钮）；重名后端自动加 -2。
+  static Future<Map<String, dynamic>> fileUpload(
+    File file,
+    String filename,
+    String dir, {
+    void Function(int sent, int total)? onProgress,
+    Future<void>? abortTrigger,
+  }) async {
+    final req = _ProgressMultipartRequest(
+      'POST',
+      _uri(kApiBase, '/api/admin/files/upload', {'path': dir}),
+      onProgress: onProgress,
+    );
+    req.headers['Authorization'] = 'Bearer $_token';
+    req.abortTrigger = abortTrigger;
+    req.files.add(
+      await http.MultipartFile.fromPath('file', file.path, filename: filename),
+    );
+    final streamed = await req.send();
+    final res = await http.Response.fromStream(streamed);
+    return _decode(res);
+  }
+
   /* ============ TOTP 重置（admin-server 代理到认证中心） ============ */
 
   /// POST /api/admin/totp/reset -> { secret, otpauthUri, expiresIn }
@@ -420,6 +504,16 @@ class Api {
       headers: _headers(),
     );
     _decode(res);
+  }
+
+  /// GET /api/blog/admin/posts/{id}/preview-link -> { published, url }
+  /// 已发布回公开地址；草稿附短时效预览令牌（url 为服务端返回的相对路径）。
+  static Future<Map<String, dynamic>> blogPostPreviewLink(int id) async {
+    final res = await http.get(
+      _uri(kApiBase, '/api/blog/admin/posts/$id/preview-link'),
+      headers: _headers(),
+    );
+    return _decode(res);
   }
 
   /// GET /api/blog/admin/collections -> { list }
@@ -590,6 +684,37 @@ class Api {
       }
     } catch (_) {}
     return 'HTTP ${res.statusCode}';
+  }
+}
+
+/// 带上传进度的 multipart 请求：finalize 时统计已发送字节，
+/// 并支持通过 [abortTrigger] 中断（http Client 支持 Abortable）。
+class _ProgressMultipartRequest extends http.MultipartRequest with http.Abortable {
+  _ProgressMultipartRequest(super.method, super.url, {this.onProgress});
+
+  final void Function(int sent, int total)? onProgress;
+
+  @override
+  Future<void>? abortTrigger;
+
+  @override
+  http.ByteStream finalize() {
+    final total = contentLength;
+    var sent = 0;
+    final onP = onProgress;
+    final base = super.finalize();
+    if (onP == null) return base;
+    return http.ByteStream(
+      base.transform(
+        StreamTransformer<List<int>, List<int>>.fromHandlers(
+          handleData: (data, sink) {
+            sent += data.length;
+            onP(sent, total);
+            sink.add(data);
+          },
+        ),
+      ),
+    );
   }
 }
 

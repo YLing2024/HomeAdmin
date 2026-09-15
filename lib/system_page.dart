@@ -240,7 +240,7 @@ class _SystemPageState extends State<SystemPage> {
           else ...[
             _metricGrid(data, c),
             const SizedBox(height: 12),
-            _diskCard(data['disk'], c),
+            _diskSection(data, c),
             if (_processes.isNotEmpty) ...[
               const SizedBox(height: 12),
               _processBlock(c),
@@ -280,6 +280,7 @@ class _SystemPageState extends State<SystemPage> {
           ),
           const SizedBox(height: 10),
           MetricBar(percent: cpuUsage),
+          _coreGrid(cpu['per_core'], c),
           const SizedBox(height: 10),
           _kv(c, '型号', (cpu['model'] ?? '-').toString()),
           _kv(c, '核心数', (cpu['cores'] ?? '-').toString()),
@@ -499,12 +500,100 @@ class _SystemPageState extends State<SystemPage> {
     );
   }
 
-  Widget _diskCard(dynamic diskRaw, AppColors c) {
+  /// 每核负载网格（对齐 Web CoreGrid）：per_core 缺失或空数组时整块不渲染，
+  /// 窄屏按可用宽度自动换列，不产生横向滚动。
+  Widget _coreGrid(dynamic raw, AppColors c) {
+    final cores =
+        raw is List ? raw.whereType<Map>().toList(growable: false) : const [];
+    if (cores.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          const gap = 8.0;
+          final width = constraints.maxWidth;
+          final cols = width < 300 ? 2 : (width < 460 ? 3 : 4);
+          final itemW = (width - gap * (cols - 1)) / cols;
+          return Wrap(
+            spacing: gap,
+            runSpacing: gap,
+            children: [
+              for (var i = 0; i < cores.length; i++)
+                SizedBox(
+                  width: itemW,
+                  child: _coreCell(c, cores[i], i),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _coreCell(AppColors c, dynamic raw, int index) {
+    final core = raw is Map ? raw : const {};
+    final id = core['id'] ?? index;
+    final percent = _pct(core['usage_percent']).clamp(0.0, 100.0).toDouble();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              '#$id',
+              style: TextStyle(
+                color: c.muted,
+                fontSize: 11,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+            const Spacer(),
+            Text(
+              '${percent.toStringAsFixed(1)}%',
+              style: TextStyle(
+                color: c.fg,
+                fontSize: 11,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 5),
+        // 颜色分级复用 MetricBar 规则（>80 红 / 60-80 橙 / <60 绿）
+        MetricBar(percent: percent, height: 3),
+      ],
+    );
+  }
+
+  /// 磁盘区：有 disks 列表时每块盘一张卡，缺失/空时回退旧单盘卡（不白屏）
+  Widget _diskSection(Map<String, dynamic> data, AppColors c) {
+    final raw = data['disks'];
+    final disks = raw is List
+        ? raw.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList()
+        : <Map<String, dynamic>>[];
+    if (disks.isEmpty) return _diskCard(data['disk'], c);
+    return Column(
+      children: [
+        for (var i = 0; i < disks.length; i++) ...[
+          if (i > 0) const SizedBox(height: 12),
+          _diskCard(
+            disks[i],
+            c,
+            title: (disks[i]['mount'] ?? '').toString().trim().isEmpty
+                ? '磁盘'
+                : '磁盘 ${(disks[i]['mount']).toString().trim()}',
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _diskCard(dynamic diskRaw, AppColors c, {String title = '磁盘'}) {
     final disk = diskRaw is Map ? diskRaw : null;
     if (disk == null) return const SizedBox.shrink();
     final percent = _pct(disk['percent']);
     return PanelCard(
-      title: '磁盘',
+      title: title,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

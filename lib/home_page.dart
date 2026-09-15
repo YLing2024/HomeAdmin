@@ -3,8 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'blog_page.dart';
-import 'chat_page.dart';
 import 'command_palette.dart';
+import 'files_page.dart';
 import 'login_page.dart';
 import 'manage_page.dart';
 import 'reset_totp_page.dart';
@@ -54,15 +54,14 @@ class _HomePageState extends State<HomePage> {
     final sp = await SharedPreferences.getInstance();
     final saved = sp.getString('admin_tab');
     if (!mounted) return;
-    // 旧版 Tab key 'chat'（聊天）兼容：按 'browse'（浏览）处理
+    // 顺序与 Web 对齐：系统 / 版本 / 博客 / 管理 / 终端 / 文件
     final map = {
-      'browse': 0,
-      'chat': 0,
-      'system': 1,
-      'version': 2,
-      'blog': 3,
-      'manage': 4,
-      'terminal': 5,
+      'system': 0,
+      'version': 1,
+      'blog': 2,
+      'manage': 3,
+      'terminal': 4,
+      'files': 5,
     };
     setState(() => _tab = map[saved] ?? 0);
   }
@@ -70,7 +69,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _selectTab(int i) async {
     setState(() => _tab = i);
     final sp = await SharedPreferences.getInstance();
-    const names = ['browse', 'system', 'version', 'blog', 'manage', 'terminal'];
+    const names = ['system', 'version', 'blog', 'manage', 'terminal', 'files'];
     await sp.setString('admin_tab', names[i]);
   }
 
@@ -143,16 +142,16 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               Expanded(
-                // IndexedStack：六个面板常驻挂载，切换不销毁浏览状态（已加载会话/消息）
+                // IndexedStack：六个面板常驻挂载，切换不销毁各自状态
                 child: IndexedStack(
                   index: _tab,
                   children: [
-                    BrowsePage(active: _tab == 0, key: const ValueKey('browse')),
-                    SystemPage(active: _tab == 1, key: const ValueKey('system')),
+                    SystemPage(active: _tab == 0, key: const ValueKey('system')),
                     const VersionPage(key: ValueKey('version')),
                     const BlogPage(key: ValueKey('blog')),
                     const ManagePage(key: ValueKey('manage')),
-                    TerminalPage(active: _tab == 5, key: const ValueKey('terminal')),
+                    TerminalPage(active: _tab == 4, key: const ValueKey('terminal')),
+                    FilesPage(active: _tab == 5, key: const ValueKey('files')),
                   ],
                 ),
               ),
@@ -164,11 +163,6 @@ class _HomePageState extends State<HomePage> {
         selectedIndex: _tab,
         onDestinationSelected: _selectTab,
         destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.history),
-            selectedIcon: Icon(Icons.history),
-            label: '浏览',
-          ),
           NavigationDestination(
             icon: Icon(Icons.monitor_heart_outlined),
             selectedIcon: Icon(Icons.monitor_heart),
@@ -193,6 +187,11 @@ class _HomePageState extends State<HomePage> {
             icon: Icon(Icons.terminal_outlined),
             selectedIcon: Icon(Icons.terminal),
             label: '终端',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.folder_outlined),
+            selectedIcon: Icon(Icons.folder),
+            label: '文件',
           ),
         ],
       ),

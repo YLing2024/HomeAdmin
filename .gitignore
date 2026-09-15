@@ -46,3 +46,8 @@ app.*.map.json
 
 # 本机项目记忆（只存本地，不提交 / 不推送）
 PROJECT_MEMORY.md
+
+# FVM Version Cache
+.fvm/
+# Kotlin/Gradle 构建产物
+android/.kotlin/
