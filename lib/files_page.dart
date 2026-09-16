@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
@@ -385,6 +386,24 @@ class _FilesPageState extends State<FilesPage> {
     });
   }
 
+  /* ============ 临时链接（限时分享，对齐 Web FileShare.jsx） ============ */
+
+  Future<void> _openShareCreate(_Entry e) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _ShareCreateDialog(path: _targetOf(e), name: e.name),
+    );
+  }
+
+  void _openShares() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => const _ShareManageSheet(),
+    );
+  }
+
   void _closeDialog() {
     setState(() {
       _dialogType = null;
@@ -547,10 +566,18 @@ class _FilesPageState extends State<FilesPage> {
           const SizedBox(height: 8),
           Row(
             children: [
-              _actionBtn(c, Icons.create_new_folder_outlined, '新建文件夹', _openMkdir),
-              const SizedBox(width: 8),
-              _actionBtn(c, Icons.upload_file_outlined, '选择文件', _pickFiles),
-              const Spacer(),
+              Expanded(
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    _actionBtn(c, Icons.create_new_folder_outlined, '新建文件夹', _openMkdir),
+                    _actionBtn(c, Icons.upload_file_outlined, '选择文件', _pickFiles),
+                    _actionBtn(c, Icons.link_outlined, '临时链接', _openShares),
+                  ],
+                ),
+              ),
               IconButton(
                 onPressed: _loading ? null : () => _load(_path),
                 tooltip: '刷新',
@@ -914,6 +941,8 @@ class _FilesPageState extends State<FilesPage> {
       onSelected: (v) {
         if (v == 'download') {
           _download(e);
+        } else if (v == 'share') {
+          _openShareCreate(e);
         } else if (v == 'rename') {
           _openRename(e);
         } else if (v == 'delete') {
@@ -926,6 +955,12 @@ class _FilesPageState extends State<FilesPage> {
             value: 'download',
             height: 40,
             child: Text('下载', style: TextStyle(fontSize: 13)),
+          ),
+        if (!e.isDir)
+          const PopupMenuItem(
+            value: 'share',
+            height: 40,
+            child: Text('链接', style: TextStyle(fontSize: 13)),
           ),
         const PopupMenuItem(
           value: 'rename',
@@ -1039,6 +1074,1015 @@ class _FilesPageState extends State<FilesPage> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/* ============ 临时链接：预设 / 文案 / 状态色 ============ */
+
+/// 预设有效期：hours 为 0 表示永久，为 null 表示自定义时刻
+const List<({String key, String label, int? hours})> _sharePresets = [
+  (key: '1h', label: '1 小时', hours: 1),
+  (key: '24h', label: '24 小时', hours: 24),
+  (key: '7d', label: '7 天', hours: 168),
+  (key: '30d', label: '30 天', hours: 720),
+  (key: 'forever', label: '永久', hours: 0),
+  (key: 'custom', label: '自定义', hours: null),
+];
+
+String _pad2(int n) => n.toString().padLeft(2, '0');
+
+String _shareFmtTime(int ms) {
+  if (ms <= 0) return '—';
+  final d = DateTime.fromMillisecondsSinceEpoch(ms);
+  return '${d.year}-${_pad2(d.month)}-${_pad2(d.day)} '
+      '${_pad2(d.hour)}:${_pad2(d.minute)}';
+}
+
+/// 毫秒时长 → 「x 天 x 小时 / x 小时 x 分 / x 分」
+String _humanDuration(int ms) {
+  final min = ms ~/ 60000;
+  final days = min ~/ 1440;
+  final hours = (min % 1440) ~/ 60;
+  final mins = min % 60;
+  if (days > 0) return '$days 天 $hours 小时';
+  if (hours > 0) return '$hours 小时 $mins 分';
+  return '${mins < 1 ? 1 : mins} 分';
+}
+
+int? _expiresMs(Map<String, dynamic> s) {
+  final e = s['expiresAt'];
+  return e is num ? e.toInt() : null;
+}
+
+bool _isPermanent(Map<String, dynamic> s) {
+  final e = _expiresMs(s);
+  return e != null && e == 0;
+}
+
+String _idOf(Map<String, dynamic> s) => (s['id'] ?? '').toString();
+
+String _displayName(Map<String, dynamic> s) {
+  final rel = (s['relPath'] ?? '').toString();
+  if (rel.isEmpty) return _idOf(s);
+  final i = rel.lastIndexOf('/');
+  return i < 0 ? rel : rel.substring(i + 1);
+}
+
+/// 列表里的有效期文案：永久 / 剩余 x / 已过期 / 已撤销
+String _shareExpiryText(Map<String, dynamic> s) {
+  if ((s['status'] ?? '').toString() == 'revoked') return '已撤销';
+  if (_isPermanent(s)) return '永久';
+  final remaining = s['remainingMs'];
+  if (remaining is num && remaining > 0) {
+    return '剩余 ${_humanDuration(remaining.toInt())}';
+  }
+  return '已过期';
+}
+
+({String text, Color color}) _shareStatusMeta(AppColors c, String status) {
+  switch (status) {
+    case 'active':
+      return (text: '有效', color: c.ok);
+    case 'expired':
+      return (text: '已过期', color: c.warn);
+    case 'revoked':
+      return (text: '已撤销', color: c.danger);
+    default:
+      return (text: status.isEmpty ? '未知' : status, color: c.muted);
+  }
+}
+
+String _msgOf(Object e) => e is ApiException ? e.message : e.toString();
+
+/// 二次确认弹窗；确认返回 true，取消 / 关闭返回 false
+Future<bool> _confirmDialog(
+  BuildContext context,
+  String title,
+  String message,
+  String confirmLabel,
+) async {
+  final c = context.c;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: c.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(4),
+        side: BorderSide(color: c.border),
+      ),
+      title: Text(
+        title,
+        style: TextStyle(color: c.fg, fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      content: Text(
+        message,
+        style: TextStyle(color: c.muted, fontSize: 13, height: 1.6),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: Text('取消', style: TextStyle(color: c.muted, fontSize: 13)),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          style: FilledButton.styleFrom(
+            backgroundColor: c.accent,
+            foregroundColor: c.bg,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+          child: Text(confirmLabel, style: const TextStyle(fontSize: 13)),
+        ),
+      ],
+    ),
+  );
+  return ok ?? false;
+}
+
+/// 弹窗外框：直角、发丝线、暖纸白 / 墨黑；窄屏不横向滚动
+Widget _shareDialogFrame(AppColors c, List<Widget> children) {
+  return Dialog(
+    backgroundColor: c.surface,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(4),
+      side: BorderSide(color: c.border),
+    ),
+    insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 420),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
+        ),
+      ),
+    ),
+  );
+}
+
+Widget _shareFieldLabel(AppColors c, String text) => Text(
+      text,
+      style: TextStyle(color: c.muted, fontSize: 11, letterSpacing: 1.2),
+    );
+
+Widget _shareChip(
+  AppColors c, {
+  required String label,
+  required bool selected,
+  required VoidCallback? onTap,
+}) {
+  return ChoiceChip(
+    label: Text(label),
+    selected: selected,
+    showCheckmark: false,
+    onSelected: onTap == null ? null : (_) => onTap(),
+    labelStyle: TextStyle(
+      fontSize: 12,
+      color: selected ? c.accent : c.fg,
+    ),
+    selectedColor: c.accentSoft,
+    backgroundColor: c.surface2,
+    side: BorderSide(color: selected ? c.accentBorder : c.border),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+  );
+}
+
+/// 日期 + 时间选择（分钟精度）；返回本地时间，取消返回 null
+Future<DateTime?> _pickShareMoment(
+  BuildContext context, {
+  required DateTime initial,
+}) async {
+  final now = DateTime.now();
+  final base = initial.isBefore(now) ? now : initial;
+  final date = await showDatePicker(
+    context: context,
+    initialDate: base,
+    firstDate: DateTime(now.year, now.month, now.day),
+    lastDate: DateTime(now.year + 10),
+  );
+  if (date == null || !context.mounted) return null;
+  final time = await showTimePicker(
+    context: context,
+    initialTime: TimeOfDay.fromDateTime(base),
+  );
+  if (time == null) return null;
+  return DateTime(date.year, date.month, date.day, time.hour, time.minute);
+}
+
+/* ---------------- 创建：预设有效期 + 自定义时刻 ---------------- */
+
+class _ShareCreateDialog extends StatefulWidget {
+  const _ShareCreateDialog({required this.path, required this.name});
+
+  /// 文件区相对路径（提交给后端）
+  final String path;
+
+  /// 展示用文件名
+  final String name;
+
+  @override
+  State<_ShareCreateDialog> createState() => _ShareCreateDialogState();
+}
+
+class _ShareCreateDialogState extends State<_ShareCreateDialog> {
+  String _preset = '24h';
+  DateTime? _customAt;
+  final TextEditingController _noteCtrl = TextEditingController();
+  bool _busy = false;
+  bool _copied = false;
+  String _error = '';
+  Map<String, dynamic>? _result;
+
+  @override
+  void initState() {
+    super.initState();
+    _customAt = DateTime.now().add(const Duration(hours: 24));
+  }
+
+  @override
+  void dispose() {
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickCustom() async {
+    final at = _customAt ?? DateTime.now().add(const Duration(hours: 24));
+    final picked = await _pickShareMoment(context, initial: at);
+    if (picked == null || !mounted) return;
+    setState(() {
+      _customAt = picked;
+      _error = '';
+    });
+  }
+
+  Future<void> _submit() async {
+    if (_busy || _result != null) return;
+    setState(() => _error = '');
+    int? ttlHours;
+    int? expiresAt;
+    if (_preset == 'forever') {
+      expiresAt = 0;
+    } else if (_preset == 'custom') {
+      final at = _customAt;
+      if (at == null) {
+        setState(() => _error = '请选择过期时间');
+        return;
+      }
+      if (!at.isAfter(DateTime.now())) {
+        setState(() => _error = '过期时间须晚于当前时间');
+        return;
+      }
+      expiresAt = at.millisecondsSinceEpoch;
+    } else {
+      ttlHours = _sharePresets.firstWhere((p) => p.key == _preset).hours;
+    }
+    setState(() => _busy = true);
+    try {
+      final rec = await Api.fileShareCreate(
+        path: widget.path,
+        ttlHours: ttlHours,
+        expiresAt: expiresAt,
+        note: _noteCtrl.text,
+      );
+      if (!mounted) return;
+      final url = (rec['url'] ?? '').toString();
+      setState(() {
+        _busy = false;
+        if (url.isEmpty) {
+          _error = '创建成功，但未返回链接';
+        } else {
+          _result = rec;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _msgOf(e);
+      });
+    }
+  }
+
+  Future<void> _copy(String url) async {
+    await Clipboard.setData(ClipboardData(text: url));
+    if (!mounted) return;
+    setState(() => _copied = true);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已复制链接')),
+    );
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (mounted) setState(() => _copied = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return _shareDialogFrame(c, [
+      Text(
+        '创建临时链接',
+        style: TextStyle(color: c.fg, fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      const SizedBox(height: 6),
+      Text(
+        widget.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: c.muted, fontSize: 12),
+      ),
+      const SizedBox(height: 14),
+      if (_result != null) ..._resultView(c, _result!) else ..._formView(c),
+    ]);
+  }
+
+  List<Widget> _formView(AppColors c) {
+    return [
+      _shareFieldLabel(c, '有效期'),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (final p in _sharePresets)
+            _shareChip(
+              c,
+              label: p.label,
+              selected: _preset == p.key,
+              onTap: _busy ? null : () => setState(() => _preset = p.key),
+            ),
+        ],
+      ),
+      if (_preset == 'custom') ...[
+        const SizedBox(height: 12),
+        _shareFieldLabel(c, '过期时间'),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _customAt == null
+                    ? '未选择'
+                    : _shareFmtTime(_customAt!.millisecondsSinceEpoch),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: c.fg, fontSize: 13),
+              ),
+            ),
+            TextButton(
+              onPressed: _busy ? null : _pickCustom,
+              child: const Text('选择时间', style: TextStyle(fontSize: 13)),
+            ),
+          ],
+        ),
+      ],
+      const SizedBox(height: 8),
+      Text(
+        _preset == 'forever'
+            ? '永久有效，不会自动过期，只能手动撤销。'
+            : '到期后链接自动失效。',
+        style: TextStyle(color: c.muted, fontSize: 11.5),
+      ),
+      const SizedBox(height: 12),
+      _shareFieldLabel(c, '备注'),
+      const SizedBox(height: 6),
+      TextField(
+        controller: _noteCtrl,
+        enabled: !_busy,
+        maxLength: 80,
+        style: TextStyle(color: c.fg, fontSize: 13),
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: '选填',
+          hintStyle: TextStyle(color: c.muted, fontSize: 13),
+          counterStyle: TextStyle(color: c.muted, fontSize: 10),
+        ),
+      ),
+      if (_error.isNotEmpty) ...[
+        Text(_error, style: TextStyle(color: c.danger, fontSize: 12)),
+      ],
+      const SizedBox(height: 14),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          TextButton(
+            onPressed: _busy ? null : () => Navigator.of(context).pop(),
+            child: Text('取消', style: TextStyle(color: c.muted, fontSize: 13)),
+          ),
+          const SizedBox(width: 6),
+          FilledButton(
+            onPressed: _busy ? null : _submit,
+            style: FilledButton.styleFrom(
+              backgroundColor: c.accent,
+              foregroundColor: c.bg,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            child: Text(
+              _busy ? '创建中…' : '创建链接',
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  List<Widget> _resultView(AppColors c, Map<String, dynamic> rec) {
+    final url = (rec['url'] ?? '').toString();
+    final expiresAt = _expiresMs(rec);
+    return [
+      _shareFieldLabel(c, '链接'),
+      const SizedBox(height: 6),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        decoration: BoxDecoration(
+          color: c.surface2,
+          border: Border.all(color: c.border),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: SelectableText(
+          url,
+          style: TextStyle(color: c.fg, fontSize: 12, fontFamily: 'monospace'),
+        ),
+      ),
+      const SizedBox(height: 8),
+      Text(
+        (expiresAt != null && expiresAt == 0)
+            ? '永久有效，不会自动过期，只能手动撤销。'
+            : '有效期至 ${_shareFmtTime(expiresAt ?? 0)}',
+        style: TextStyle(color: c.muted, fontSize: 11.5),
+      ),
+      const SizedBox(height: 14),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('完成', style: TextStyle(color: c.muted, fontSize: 13)),
+          ),
+          const SizedBox(width: 6),
+          FilledButton(
+            onPressed: () => _copy(url),
+            style: FilledButton.styleFrom(
+              backgroundColor: c.accent,
+              foregroundColor: c.bg,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            child: Text(
+              _copied ? '已复制' : '复制链接',
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    ];
+  }
+}
+
+/* ---------------- 改期：改过期时刻本身（转永久 = expiresAt 0） ---------------- */
+
+class _ShareScheduleDialog extends StatefulWidget {
+  const _ShareScheduleDialog({required this.share});
+
+  final Map<String, dynamic> share;
+
+  @override
+  State<_ShareScheduleDialog> createState() => _ShareScheduleDialogState();
+}
+
+class _ShareScheduleDialogState extends State<_ShareScheduleDialog> {
+  late final bool _permanentAtOpen;
+  String _mode = 'finite'; // finite / permanent
+  DateTime? _at;
+  bool _busy = false;
+  String _error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _permanentAtOpen = _isPermanent(widget.share);
+    _mode = _permanentAtOpen ? 'permanent' : 'finite';
+    final cur = _expiresMs(widget.share);
+    _at = (cur != null && cur > 0)
+        ? DateTime.fromMillisecondsSinceEpoch(cur)
+        : null;
+  }
+
+  Future<void> _pick() async {
+    final at = _at ?? DateTime.now().add(const Duration(hours: 24));
+    final picked = await _pickShareMoment(context, initial: at);
+    if (picked == null || !mounted) return;
+    setState(() {
+      _at = picked;
+      _error = '';
+    });
+  }
+
+  String _hint() {
+    if (_mode == 'permanent') {
+      return _permanentAtOpen
+          ? '当前为永久有效，不会自动过期。'
+          : '转为永久后不再自动过期，需手动撤销；之后可随时再指定过期时间。';
+    }
+    final at = _at;
+    if (at == null) {
+      return _permanentAtOpen ? '当前为永久有效：选择过期时间即转为限时。' : '';
+    }
+    final diff = at.difference(DateTime.now()).inMilliseconds;
+    if (diff <= 0) return '该时刻已过去，请选择未来时间';
+    final tip = '距现在约 ${_humanDuration(diff)}';
+    final cur = _expiresMs(widget.share) ?? 0;
+    if (!_permanentAtOpen && cur > 0 && at.millisecondsSinceEpoch < cur) {
+      return '$tip（比当前到期时间早，将缩短有效期）';
+    }
+    return tip;
+  }
+
+  Future<void> _submit() async {
+    if (_busy) return;
+    setState(() => _error = '');
+    if (_mode == 'permanent') {
+      final ok = await _confirmDialog(
+        context,
+        '转为永久',
+        '转为永久有效后不再自动过期，只能手动撤销。确认？',
+        '转为永久',
+      );
+      if (!ok || !mounted) return;
+      await _submitBody(0);
+      return;
+    }
+    final at = _at;
+    if (at == null) {
+      setState(() => _error = '请选择过期时间');
+      return;
+    }
+    final ms = at.millisecondsSinceEpoch;
+    if (!at.isAfter(DateTime.now())) {
+      setState(() => _error = '过期时间须晚于当前时间');
+      return;
+    }
+    final cur = _expiresMs(widget.share) ?? 0;
+    if (!_permanentAtOpen && cur > 0 && ms < cur) {
+      final ok = await _confirmDialog(
+        context,
+        '缩短有效期',
+        '新的过期时间早于当前，将缩短有效期。确认？',
+        '确定',
+      );
+      if (!ok || !mounted) return;
+    }
+    await _submitBody(ms);
+  }
+
+  Future<void> _submitBody(int expiresAt) async {
+    setState(() => _busy = true);
+    try {
+      final rec = await Api.fileShareUpdate(_idOf(widget.share), expiresAt: expiresAt);
+      if (!mounted) return;
+      Navigator.of(context).pop(rec);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _msgOf(e);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return _shareDialogFrame(c, [
+      Text(
+        '改期',
+        style: TextStyle(color: c.fg, fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      const SizedBox(height: 6),
+      Text(
+        _displayName(widget.share),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: c.muted, fontSize: 12),
+      ),
+      const SizedBox(height: 14),
+      if (!_permanentAtOpen) ...[
+        _shareFieldLabel(c, '方式'),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          children: [
+            _shareChip(
+              c,
+              label: '指定时刻',
+              selected: _mode == 'finite',
+              onTap: _busy ? null : () => setState(() => _mode = 'finite'),
+            ),
+            _shareChip(
+              c,
+              label: '转为永久',
+              selected: _mode == 'permanent',
+              onTap: _busy
+                  ? null
+                  : () => setState(() => _mode = 'permanent'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+      ],
+      if (_mode == 'finite') ...[
+        _shareFieldLabel(c, '过期时间'),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _at == null
+                    ? '未选择'
+                    : _shareFmtTime(_at!.millisecondsSinceEpoch),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: c.fg, fontSize: 13),
+              ),
+            ),
+            TextButton(
+              onPressed: _busy ? null : _pick,
+              child: const Text('选择时间', style: TextStyle(fontSize: 13)),
+            ),
+          ],
+        ),
+      ],
+      if (_hint().isNotEmpty) ...[
+        const SizedBox(height: 4),
+        Text(_hint(), style: TextStyle(color: c.muted, fontSize: 11.5)),
+      ],
+      if (_error.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        Text(_error, style: TextStyle(color: c.danger, fontSize: 12)),
+      ],
+      const SizedBox(height: 14),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          TextButton(
+            onPressed: _busy ? null : () => Navigator.of(context).pop(),
+            child: Text('取消', style: TextStyle(color: c.muted, fontSize: 13)),
+          ),
+          const SizedBox(width: 6),
+          FilledButton(
+            onPressed: _busy ? null : _submit,
+            style: FilledButton.styleFrom(
+              backgroundColor: c.accent,
+              foregroundColor: c.bg,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            child: Text(
+              _busy ? '提交中…' : '确定',
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    ]);
+  }
+}
+
+/* ---------------- 管理面板：列表 / 复制 / 改期 / 撤销 / 删除 ---------------- */
+
+class _ShareManageSheet extends StatefulWidget {
+  const _ShareManageSheet();
+
+  @override
+  State<_ShareManageSheet> createState() => _ShareManageSheetState();
+}
+
+class _ShareManageSheetState extends State<_ShareManageSheet> {
+  List<Map<String, dynamic>> _items = [];
+  bool _loading = true;
+  String _error = '';
+  String _busyId = '';
+  String _copiedId = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = '';
+    });
+    try {
+      final list = await Api.fileShares();
+      if (!mounted) return;
+      setState(() {
+        _items = list;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = _msgOf(e);
+        _items = [];
+        _loading = false;
+      });
+    }
+  }
+
+  void _apply(Map<String, dynamic> rec) {
+    final id = rec['id'];
+    if (id == null) return;
+    setState(() {
+      _items = [
+        for (final s in _items) s['id'] == id ? rec : s,
+      ];
+    });
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _copy(Map<String, dynamic> s) async {
+    final url = (s['url'] ?? '').toString();
+    if (url.isEmpty) {
+      _snack('该记录没有链接');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: url));
+    if (!mounted) return;
+    final id = _idOf(s);
+    setState(() => _copiedId = id);
+    _snack('已复制链接');
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (mounted && _copiedId == id) setState(() => _copiedId = '');
+    });
+  }
+
+  Future<void> _edit(Map<String, dynamic> s) async {
+    final updated = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => _ShareScheduleDialog(share: s),
+    );
+    if (updated == null || !mounted) return;
+    _apply(updated);
+  }
+
+  Future<void> _revoke(Map<String, dynamic> s) async {
+    final ok = await _confirmDialog(
+      context,
+      '撤销链接',
+      '撤销「${_displayName(s)}」的临时链接？撤销后不可恢复。',
+      '撤销',
+    );
+    if (!ok || !mounted) return;
+    setState(() => _busyId = _idOf(s));
+    try {
+      final rec = await Api.fileShareUpdate(_idOf(s), revoked: true);
+      if (!mounted) return;
+      _apply(rec);
+    } catch (e) {
+      _snack(_msgOf(e));
+    } finally {
+      if (mounted) setState(() => _busyId = '');
+    }
+  }
+
+  Future<void> _remove(Map<String, dynamic> s) async {
+    final ok = await _confirmDialog(
+      context,
+      '删除记录',
+      '删除「${_displayName(s)}」的链接记录？磁盘文件不受影响。',
+      '删除',
+    );
+    if (!ok || !mounted) return;
+    final id = _idOf(s);
+    setState(() => _busyId = id);
+    try {
+      await Api.fileShareDelete(id);
+      if (!mounted) return;
+      setState(() => _items = _items.where((x) => x['id'] != s['id']).toList());
+    } catch (e) {
+      _snack(_msgOf(e));
+    } finally {
+      if (mounted) setState(() => _busyId = '');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.82;
+    return Container(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+      decoration: BoxDecoration(
+        color: c.surface,
+        border: Border(top: BorderSide(color: c.border)),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Text(
+                '临时链接',
+                style: TextStyle(
+                  color: c.fg,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 1,
+                ),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: _loading ? null : _load,
+                child: Text('刷新', style: TextStyle(color: c.accent, fontSize: 12)),
+              ),
+              IconButton(
+                onPressed: () => Navigator.of(context).pop(),
+                visualDensity: VisualDensity.compact,
+                tooltip: '关闭',
+                icon: Icon(Icons.close, size: 18, color: c.muted),
+              ),
+            ],
+          ),
+          if (_error.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(_error, style: TextStyle(color: c.danger, fontSize: 12)),
+          ],
+          const SizedBox(height: 6),
+          Flexible(child: _buildBody(c)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody(AppColors c) {
+    if (_loading && _items.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(28),
+        child: Center(
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      color: c.accent,
+      backgroundColor: c.surface,
+      child: _items.isEmpty
+          ? ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                const SizedBox(height: 48),
+                Center(
+                  child: Text(
+                    '暂无临时链接',
+                    style: TextStyle(color: c.muted, fontSize: 13),
+                  ),
+                ),
+              ],
+            )
+          : ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: EdgeInsets.zero,
+              itemCount: _items.length,
+              separatorBuilder: (_, _) => Divider(height: 1, color: c.border),
+              itemBuilder: (_, i) => _item(c, _items[i]),
+            ),
+    );
+  }
+
+  Widget _item(AppColors c, Map<String, dynamic> s) {
+    final id = _idOf(s);
+    final status = (s['status'] ?? '').toString();
+    final meta = _shareStatusMeta(c, status);
+    final name = _displayName(s);
+    final relPath = (s['relPath'] ?? '').toString();
+    final note = (s['note'] ?? '').toString();
+    final downloads = s['downloads'];
+    final count = downloads is num ? downloads.toInt() : 0;
+    final created = s['createdAt'];
+    final createdMs = created is num ? created.toInt() : 0;
+    final fileExists = s['fileExists'] != false;
+    final busy = _busyId == id;
+    final copied = _copiedId == id;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: c.fg, fontSize: 13),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: meta.color,
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(meta.text, style: TextStyle(color: meta.color, fontSize: 11.5)),
+            ],
+          ),
+          if (relPath.isNotEmpty && relPath != name) ...[
+            const SizedBox(height: 2),
+            Text(
+              relPath,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: c.muted,
+                fontSize: 11,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            '有效期 ${_shareExpiryText(s)} · 下载 $count 次 · 创建 ${_shareFmtTime(createdMs)}',
+            style: TextStyle(color: c.muted, fontSize: 11),
+          ),
+          if (!fileExists) ...[
+            const SizedBox(height: 2),
+            Text('文件已删除', style: TextStyle(color: c.danger, fontSize: 11)),
+          ],
+          if (note.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              '备注 $note',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: c.muted, fontSize: 11),
+            ),
+          ],
+          const SizedBox(height: 2),
+          Wrap(
+            spacing: 2,
+            runSpacing: 0,
+            children: [
+              _op(
+                c,
+                copied ? '已复制' : '复制链接',
+                onTap: () => _copy(s),
+              ),
+              if (status == 'active')
+                _op(c, '改期', onTap: busy ? null : () => _edit(s)),
+              if (status == 'active')
+                _op(c, '撤销', danger: true, onTap: busy ? null : () => _revoke(s)),
+              _op(c, '删除记录', danger: true, onTap: busy ? null : () => _remove(s)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _op(
+    AppColors c,
+    String label, {
+    bool danger = false,
+    VoidCallback? onTap,
+  }) {
+    return TextButton(
+      onPressed: onTap,
+      style: TextButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        foregroundColor: danger ? c.danger : c.accent,
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 11.5)),
     );
   }
 }

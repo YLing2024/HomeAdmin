@@ -443,6 +443,83 @@ class Api {
     return _decode(res);
   }
 
+  /* ============ 文件区 · 临时链接（限时分享，对齐 Web FileShare.jsx） ============ */
+  // 语义对齐后端 /api/admin/files/shares：expiresAt === 0 为永久有效哨兵；
+  // 分享链接一律使用后端返回的 url 字段，不拼域名。
+
+  /// GET /api/admin/files/shares -> { shares: [...] }
+  /// 列表接口正常返回 { shares }，这里兼容裸数组（双保险）。
+  static Future<List<Map<String, dynamic>>> fileShares() async {
+    final res = await http.get(
+      _uri(kApiBase, '/api/admin/files/shares'),
+      headers: _headers(),
+    );
+    return _decodeListOr(res, 'shares')
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
+  }
+
+  /// POST /api/admin/files/shares { path, ttlHours? | expiresAt?, note? } -> 记录（含 url）
+  /// ttlHours 与 expiresAt 二选一：expiresAt 为绝对 epoch 毫秒（0 = 永久），
+  /// 都不给时后端默认 24 小时。
+  static Future<Map<String, dynamic>> fileShareCreate({
+    required String path,
+    int? ttlHours,
+    int? expiresAt,
+    String? note,
+  }) async {
+    final body = <String, dynamic>{'path': path};
+    if (expiresAt != null) {
+      body['expiresAt'] = expiresAt;
+    } else if (ttlHours != null) {
+      body['ttlHours'] = ttlHours;
+    }
+    final n = note?.trim() ?? '';
+    if (n.isNotEmpty) body['note'] = n;
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/files/shares'),
+      headers: _headers(),
+      body: jsonEncode(body),
+    );
+    return _shareRecord(_decode(res));
+  }
+
+  /// PATCH /api/admin/files/shares/{id} { expiresAt?, note?, revoked? } -> 记录
+  /// expiresAt: 0 转永久；>0 改为该绝对到期时刻；revoked: true 撤销（不可逆）。
+  static Future<Map<String, dynamic>> fileShareUpdate(
+    String id, {
+    int? expiresAt,
+    String? note,
+    bool? revoked,
+  }) async {
+    final body = <String, dynamic>{};
+    if (expiresAt != null) body['expiresAt'] = expiresAt;
+    if (note != null) body['note'] = note;
+    if (revoked != null) body['revoked'] = revoked;
+    final res = await http.patch(
+      _uri(kApiBase, '/api/admin/files/shares/${Uri.encodeComponent(id)}'),
+      headers: _headers(),
+      body: jsonEncode(body),
+    );
+    return _shareRecord(_decode(res));
+  }
+
+  /// DELETE /api/admin/files/shares/{id}（仅删记录，不动磁盘文件）
+  static Future<void> fileShareDelete(String id) async {
+    final res = await http.delete(
+      _uri(kApiBase, '/api/admin/files/shares/${Uri.encodeComponent(id)}'),
+      headers: _headers(),
+    );
+    _decode(res);
+  }
+
+  /// 后端直接返回记录；兼容被包一层 share 的写法（双保险）。
+  static Map<String, dynamic> _shareRecord(Map<String, dynamic> data) {
+    final rec = data['share'];
+    return rec is Map ? Map<String, dynamic>.from(rec) : data;
+  }
+
   /* ============ TOTP 重置（admin-server 代理到认证中心） ============ */
 
   /// POST /api/admin/totp/reset -> { secret, otpauthUri, expiresIn }
@@ -643,6 +720,23 @@ class Api {
     } catch (_) {
       return const [];
     }
+  }
+
+  /// 解析「对象包裹的数组字段」或「裸数组」两种响应（分享列表双保险）
+  static List<dynamic> _decodeListOr(http.Response res, String key) {
+    if (res.statusCode == 401) {
+      _notifyAuthRequired();
+      throw ApiException('未登录或登录已过期', code: 401);
+    }
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw ApiException(_errorOf(res), code: res.statusCode);
+    }
+    try {
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+      if (decoded is List) return decoded;
+      if (decoded is Map && decoded[key] is List) return decoded[key] as List;
+    } catch (_) {}
+    return const [];
   }
 
   static Map<String, dynamic> _decode(http.Response res) {
