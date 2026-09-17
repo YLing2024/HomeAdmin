@@ -69,18 +69,30 @@ flutter build apk --release       # 产物 build/app/outputs/flutter-apk/app-rel
 
 文案：唯美克制，**禁 emoji / 鸡汤 / 网络热词**。
 
-## ⚠️ 已知违规（待修）
+## ✅ 已修复：私有地址改为编译期注入
 
-`lib/api.dart` 顶部**硬编码了私有基础设施地址**：
+`lib/api.dart` 顶部原硬编码的私有基础设施地址已改为编译期注入：
 
 ```dart
-const String kApiBase  = 'https://zhangyunling.cn';
-const String kAuthBase = 'https://auth.zhangyunling.cn';
+const String kApiBase = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'https://api.example.com',
+);
+const String kAuthBase = String.fromEnvironment(
+  'AUTH_BASE',
+  defaultValue: 'https://auth.example.com',
+);
 ```
 
-这违反了本项目「私有地址必须环境注入、不得入库」的规范（前端项目一律走 `import.meta.env.VITE_*` 模式）。Dart 侧的正确做法是用 `--dart-define=API_BASE=...` + `String.fromEnvironment(...)`，默认值回退占位（如 `https://api.example.com`），并在 README 说明构建命令。
+**构建必须带两个 `--dart-define`**，否则会回退到占位域、连不上后端：
 
-**这是公开仓库**，改动本文件前先确认用户是否同意一并修掉；不要在新代码里继续加硬编码地址。
+```bash
+flutter build apk --release \
+  --dart-define=API_BASE=<admin 域名，含 https://> \
+  --dart-define=AUTH_BASE=<认证中心域名，含 https://>
+```
+
+规则不变：私有地址必须环境注入、不得入库；不要在新代码里继续加硬编码地址。
 
 ## 已知坑
 

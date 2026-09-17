@@ -373,7 +373,7 @@ class _ManagePageState extends State<ManagePage> {
   Future<void> _showCreatedToken(String token) async {
     var copied = false;
     final curl =
-        'curl -H "Authorization: Bearer $token" https://zhangyunling.cn/api/admin/system';
+        'curl -H "Authorization: Bearer $token" $kApiBase/api/admin/system';
     await showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(

@@ -6,11 +6,20 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+// 构建时必须带 --dart-define 注入真实地址，否则将回退到占位域、连不上后端：
+//   flutter build apk --release --dart-define=API_BASE=... --dart-define=AUTH_BASE=...
+
 /// 管理后台 API 基址（nginx 入口，Bearer token 由 auth_request 探针校验）
-const String kApiBase = 'https://zhangyunling.cn';
+const String kApiBase = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'https://api.example.com',
+);
 
 /// 认证中心 API 基址（登录校验 TOTP 动态码并签发会话 token）
-const String kAuthBase = 'https://auth.zhangyunling.cn';
+const String kAuthBase = String.fromEnvironment(
+  'AUTH_BASE',
+  defaultValue: 'https://auth.example.com',
+);
 
 class ApiException implements Exception {
   final String message;
