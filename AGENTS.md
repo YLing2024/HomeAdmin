@@ -55,9 +55,9 @@ flutter build apk --release       # 产物 build/app/outputs/flutter-apk/app-rel
 在这台 VPS 上构建 APK **必须**先处理这两个坑，否则会白等一轮（每轮约 25 分钟）：
 
 1. **Gradle daemon OOM**（`Gradle build daemon disappeared unexpectedly`）：
-   模板默认 `android/gradle.properties` 是 `org.gradle.jvmargs=-Xmx8G ...`，内存被 cgroup 限制时会 OOM-kill。
-   → 改成 `-Xmx1024m -XX:MaxMetaspaceSize=512m`，然后 `pkill -9 -f GradleDaemon` 让新限制生效。
-2. **构建完必须杀 daemon**：Gradle daemon 默认空闲存活 ~3h、常驻 ~600MB。服务器上构建结束就 `pkill -f GradleDaemon`（或 `./gradlew --stop`），否则内存/swap 会被吃掉。
+   `android/gradle.properties` 现为 `org.gradle.jvmargs=-Xmx3G -XX:MaxMetaspaceSize=1G -XX:ReservedCodeCacheSize=512m`（8 vCPU / 7.9G 内存的服务器，2026-09-17 实测构建通过）。
+   早期 1.9G 内存的机器上曾是 `-Xmx1024m -XX:MaxMetaspaceSize=512m`；换机后按内存上调。内存被 cgroup 限制时会被 OOM-kill，必要时再下调。
+2. **构建完必须杀 daemon**：Gradle daemon 默认空闲存活 ~3h、常驻 ~600MB。服务器上构建结束就 `pkill -f "[G]radleDaemon"`（方括号防自匹配）（或 `./gradlew --stop`），否则内存/swap 会被吃掉。
    长期方案：`org.gradle.daemon.idletimeout=60000` 或 `org.gradle.daemon=false`。
 3. 插件 `compileSdk` 不匹配时，不要去改 `android/build.gradle.kts` 的 `subprojects {}`（会被插件自身的 build.gradle 覆盖）——可靠做法是**锁定已验证的插件版本**。
 
