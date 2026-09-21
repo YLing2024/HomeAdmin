@@ -2,16 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
+import 'debug_tools.dart' show buildNotificationPayload;
 import 'login_page.dart';
 import 'notification_feed.dart';
 import 'notification_model.dart';
+import 'notification_push.dart';
 import 'notification_store.dart';
+import 'push_wait_result.dart';
 import 'theme.dart';
 
-/// 通知 Tab：未读概览 + 列表（下拉刷新 / 翻页 / 标记已读 / 打开外链）。
+/// 通知页：发通知（页头内联表单）+ 列表 + 筛选 + 单条已读/删除 + 全部已读。
 ///
 /// 数据源：`GET /api/admin/notifications`（ts / readAt 均为 epoch 秒）。
-/// 服务 isolate 通过 SSE 实时推送的新通知经 [NotificationStore.incoming] 置顶。
+/// 服务器 SSE 实时推送的新通知经 [NotificationStore.incoming] 置顶。
+///
+/// 铁律：本页发出通知后**禁止乐观更新** —— 不本地插入、不刷未读，只显示
+/// 「已提交到服务器，等待推送…」，以 [PushWaitResult] 呈现收到 / 超时。
 class NotificationsPage extends StatefulWidget {
   const NotificationsPage({super.key, this.active = true});
 
@@ -25,6 +31,9 @@ class NotificationsPage extends StatefulWidget {
 class _NotificationsPageState extends State<NotificationsPage> {
   static const int _pageSize = 50;
 
+  /// 发通知固定来源：后端 source 必填且不能为空，界面上不露出（先例与 Web 一致取 admin）。
+  static const String _composeSource = 'admin';
+
   final ScrollController _scroll = ScrollController();
   final NotificationFeed _feed = NotificationFeed(pageSize: _pageSize);
 
@@ -32,6 +41,23 @@ class _NotificationsPageState extends State<NotificationsPage> {
   bool _loadingMore = false;
   bool _markingAll = false;
   String? _error;
+
+  /* ===== 筛选 ===== */
+  bool _unreadOnly = false;
+  String _levelFilter = '';
+  String _sourceFilter = '';
+  final Set<String> _sources = {};
+
+  /* ===== 发通知（页头内联表单） ===== */
+  final PushWaitController _pushWait = PushWaitController();
+  final TextEditingController _title = TextEditingController();
+  final TextEditingController _bodyText = TextEditingController();
+  final TextEditingController _link = TextEditingController();
+  String _level = 'normal';
+  bool _composeOpen = false;
+  bool _sending = false;
+  bool _repulled = false;
+  String? _composeError;
 
   @override
   void initState() {
@@ -57,6 +83,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
     _scroll.dispose();
     NotificationStore.incoming.removeListener(_onIncoming);
     NotificationStore.reloadTick.removeListener(_onReloadRequest);
+    _pushWait.dispose();
+    _title.dispose();
+    _bodyText.dispose();
+    _link.dispose();
     super.dispose();
   }
 
@@ -71,11 +101,14 @@ class _NotificationsPageState extends State<NotificationsPage> {
   void _onIncoming() {
     final item = NotificationStore.incoming.value;
     if (item == null || !mounted) return;
-    if (!_feed.applyPush(item)) return; // 同 id 去重更新，不重复计数
+    _addSources([item]);
+    // 对齐 Web：不匹配当前筛选的推送不插入列表（未读徽标仍由服务状态更新）。
+    if (!_matchesFilter(item)) return;
+    _feed.applyPush(item);
     setState(() {});
   }
 
-  /// 管理页 / 调试页超时后请求「重新拉取列表」。
+  /// 调试页 / 其它发送方超时后请求「重新拉取列表」。
   void _onReloadRequest() {
     if (!mounted) return;
     _load(silent: _feed.items.isNotEmpty);
@@ -89,10 +122,16 @@ class _NotificationsPageState extends State<NotificationsPage> {
       });
     }
     try {
-      final data = await Api.notifications(limit: _pageSize);
+      final data = await Api.notifications(
+        limit: _pageSize,
+        unreadOnly: _unreadOnly,
+        level: _levelFilter,
+        source: _sourceFilter,
+      );
       final list = _itemsOf(data);
       final unread = data['unread'];
       if (!mounted) return;
+      _addSources(list);
       setState(() {
         _feed.replaceAll(list, unread is num ? unread.toInt() : null);
         _loading = false;
@@ -120,6 +159,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
       final data = await Api.notifications(
         limit: _pageSize,
         before: _feed.items.last.id,
+        unreadOnly: _unreadOnly,
+        level: _levelFilter,
+        source: _sourceFilter,
       );
       final list = _itemsOf(data);
       if (!mounted) return;
@@ -145,6 +187,41 @@ class _NotificationsPageState extends State<NotificationsPage> {
         .map((m) => NotificationItem.fromJson(Map<String, dynamic>.from(m)))
         .toList();
   }
+
+  void _addSources(Iterable<NotificationItem> items) {
+    for (final item in items) {
+      if (item.source.isNotEmpty) _sources.add(item.source);
+    }
+  }
+
+  bool _matchesFilter(NotificationItem item) {
+    if (_unreadOnly && !item.isUnread) return false;
+    if (_levelFilter.isNotEmpty && item.level != _levelFilter) return false;
+    if (_sourceFilter.isNotEmpty && item.source != _sourceFilter) return false;
+    return true;
+  }
+
+  /* ============ 筛选切换 ============ */
+
+  void _setUnreadOnly(bool value) {
+    if (_unreadOnly == value) return;
+    setState(() => _unreadOnly = value);
+    _load();
+  }
+
+  void _setLevelFilter(String value) {
+    if (_levelFilter == value) return;
+    setState(() => _levelFilter = value);
+    _load();
+  }
+
+  void _setSourceFilter(String value) {
+    if (_sourceFilter == value) return;
+    setState(() => _sourceFilter = value);
+    _load();
+  }
+
+  /* ============ 单条已读 / 打开链接 ============ */
 
   Future<void> _open(NotificationItem item) async {
     if (item.isUnread) {
@@ -181,6 +258,56 @@ class _NotificationsPageState extends State<NotificationsPage> {
     }
   }
 
+  /* ============ 单条删除（二次确认） ============ */
+
+  Future<void> _delete(NotificationItem item) async {
+    final confirmed = await _confirm(title: '删除通知', message: '删除这条通知？删除后不可恢复。');
+    if (!confirmed || !mounted) return;
+    try {
+      await Api.notificationDelete(item.id);
+      if (!mounted) return;
+      final removed = _feed.remove(item.id);
+      if (removed != null) setState(() {});
+      await NotificationStore.setUnread(_feed.unread);
+      if (mounted) showAppToast(context, '已删除', ok: true);
+    } catch (e) {
+      if (!mounted) return;
+      final handled = await handleAuthError(context, e);
+      if (!handled && mounted) showAppToast(context, '删除失败', ok: false);
+    }
+  }
+
+  Future<bool> _confirm({
+    required String title,
+    required String message,
+  }) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: ctx.c.surface,
+        title: Text(title, style: TextStyle(color: ctx.c.fg, fontSize: 16)),
+        content: Text(message, style: TextStyle(color: ctx.c.fg, fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(
+              '取消',
+              style: TextStyle(color: ctx.c.muted, fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(
+              '删除',
+              style: TextStyle(color: ctx.c.danger, fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
   Future<void> _openLink(String url) async {
     try {
       final ok = await launchUrl(
@@ -193,17 +320,77 @@ class _NotificationsPageState extends State<NotificationsPage> {
     }
   }
 
+  /* ============ 发通知 ============ */
+
+  Future<void> _sendNotification() async {
+    final title = _title.text.trim();
+    if (title.isEmpty) {
+      setState(() => _composeError = '标题不能为空');
+      return;
+    }
+    final payload = buildNotificationPayload(
+      level: _level,
+      title: title,
+      source: _composeSource,
+      body: _bodyText.text,
+      link: _link.text,
+    );
+    final startedAt = DateTime.now().millisecondsSinceEpoch;
+    setState(() {
+      _sending = true;
+      _composeError = null;
+      _repulled = false;
+    });
+    try {
+      final r = await Api.createNotification(payload);
+      if (!mounted) return;
+      setState(() => _sending = false);
+      if (!r.ok) {
+        setState(() => _composeError = '发送失败：HTTP ${r.status}');
+        return;
+      }
+      _title.clear();
+      _bodyText.clear();
+      _link.clear();
+      // 铁律：禁止乐观更新。不插入列表、不刷未读，只等服务器 SSE 推送。
+      _pushWait.begin(
+        PushTarget(id: r.id, title: title, source: _composeSource),
+        startedAtMillis: startedAt,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+        _composeError = e.toString();
+      });
+      await handleAuthError(context, e);
+    }
+  }
+
+  /// 等待超时后的显式动作：重新拉取列表（用户主动触发，允许更新未读）。
+  Future<void> _repull() async {
+    setState(() => _repulled = true);
+    await _load(silent: _feed.items.isNotEmpty);
+  }
+
+  /* ============ 布局 ============ */
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
     return RefreshIndicator(
       color: c.accent,
       onRefresh: () => _load(silent: _feed.items.isNotEmpty),
-      child: Column(
-        children: [
-          _header(c),
-          const Divider(height: 1),
-          Expanded(child: _body(c)),
+      child: CustomScrollView(
+        controller: _scroll,
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(child: _header(c)),
+          if (_composeOpen) SliverToBoxAdapter(child: _composeSection(c)),
+          SliverToBoxAdapter(child: const Divider(height: 1)),
+          SliverToBoxAdapter(child: _filterBar(c)),
+          SliverToBoxAdapter(child: const Divider(height: 1)),
+          ..._bodySlivers(c),
         ],
       ),
     );
@@ -239,6 +426,13 @@ class _NotificationsPageState extends State<NotificationsPage> {
             ),
           const Spacer(),
           TextButton(
+            onPressed: () => setState(() => _composeOpen = !_composeOpen),
+            child: Text(
+              _composeOpen ? '收起' : '发通知',
+              style: TextStyle(color: c.accent, fontSize: 13),
+            ),
+          ),
+          TextButton(
             onPressed: (_feed.unread == 0 || _markingAll) ? null : _readAll,
             child: Text(
               _markingAll ? '处理中…' : '全部已读',
@@ -250,50 +444,96 @@ class _NotificationsPageState extends State<NotificationsPage> {
     );
   }
 
-  Widget _body(AppColors c) {
-    if (_loading && _feed.items.isEmpty) {
-      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
-    }
-    if (_error != null && _feed.items.isEmpty) {
-      return ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-        children: [_errorBanner(c, _error!)],
-      );
-    }
-    if (_feed.items.isEmpty) {
-      return ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.symmetric(horizontal: 24),
+  Widget _filterBar(AppColors c) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          const SizedBox(height: 120),
-          Text(
-            '暂无通知',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: c.fg, fontSize: 14),
+          _segment(c, '全部', !_unreadOnly, () => _setUnreadOnly(false)),
+          _segment(c, '未读', _unreadOnly, () => _setUnreadOnly(true)),
+          _dropdown(
+            c,
+            value: _levelFilter,
+            items: [('', '全部级别'), ...kNotificationLevelOptions],
+            onChanged: _setLevelFilter,
           ),
-          const SizedBox(height: 8),
-          Text(
-            '新的系统通知会出现在这里。',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: c.muted, fontSize: 12),
+          _dropdown(
+            c,
+            width: 140,
+            value: _sourceFilter,
+            items: [('', '全部来源'), for (final s in _sources) (s, s)],
+            onChanged: _setSourceFilter,
           ),
         ],
-      );
-    }
-    return ListView.builder(
-      controller: _scroll,
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      itemCount: _feed.items.length + 1,
-      itemBuilder: (_, i) {
-        if (i == _feed.items.length) return _footer(c);
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: _itemTile(c, _feed.items[i]),
-        );
-      },
+      ),
     );
+  }
+
+  List<Widget> _bodySlivers(AppColors c) {
+    if (_loading && _feed.items.isEmpty) {
+      return const [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        ),
+      ];
+    }
+    if (_error != null && _feed.items.isEmpty) {
+      return [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            child: _errorBanner(c, _error!),
+          ),
+        ),
+      ];
+    }
+    if (_feed.items.isEmpty) {
+      return [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  _unreadOnly ||
+                          _levelFilter.isNotEmpty ||
+                          _sourceFilter.isNotEmpty
+                      ? '没有符合条件的通知'
+                      : '暂无通知',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: c.fg, fontSize: 14),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '新的系统通知会出现在这里。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: c.muted, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ];
+    }
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+        sliver: SliverList.builder(
+          itemCount: _feed.items.length,
+          itemBuilder: (_, i) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _itemTile(c, _feed.items[i]),
+          ),
+        ),
+      ),
+      SliverToBoxAdapter(child: _footer(c)),
+    ];
   }
 
   Widget _footer(AppColors c) {
@@ -333,7 +573,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
             Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 1,
+                  ),
                   decoration: BoxDecoration(
                     border: Border.all(
                       color: urgent ? c.accentBorder : c.border,
@@ -341,7 +584,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                     borderRadius: BorderRadius.circular(3),
                   ),
                   child: Text(
-                    _levelLabel(item.level),
+                    notificationLevelLabel(item.level),
                     style: TextStyle(
                       color: urgent ? c.accent : c.muted,
                       fontSize: 10,
@@ -386,8 +629,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
                     style: TextStyle(
                       color: c.fg,
                       fontSize: 13,
-                      fontWeight:
-                          item.isUnread ? FontWeight.w600 : FontWeight.w400,
+                      fontWeight: item.isUnread
+                          ? FontWeight.w600
+                          : FontWeight.w400,
                     ),
                   ),
                 ),
@@ -396,6 +640,17 @@ class _NotificationsPageState extends State<NotificationsPage> {
                     padding: const EdgeInsets.only(left: 8, top: 1),
                     child: Icon(Icons.open_in_new, size: 14, color: c.muted),
                   ),
+                IconButton(
+                  onPressed: () => _delete(item),
+                  tooltip: '删除',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 30,
+                    minHeight: 24,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.delete_outline, size: 16, color: c.muted),
+                ),
               ],
             ),
             if (body.isNotEmpty) ...[
@@ -413,15 +668,194 @@ class _NotificationsPageState extends State<NotificationsPage> {
     );
   }
 
-  String _levelLabel(String level) {
-    switch (level) {
-      case 'urgent':
-        return '紧急';
-      case 'digest':
-        return '摘要';
-      default:
-        return '通知';
-    }
+  /* ============ 发通知表单 ============ */
+
+  Widget _composeSection(AppColors c) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _fieldLabel(c, '级别'),
+          const SizedBox(height: 6),
+          DropdownButtonFormField<String>(
+            initialValue: _level,
+            isExpanded: true,
+            dropdownColor: c.surface,
+            style: TextStyle(color: c.fg, fontSize: 13),
+            decoration: _inputDecoration(c),
+            items: [
+              for (final (value, label) in kNotificationLevelOptions)
+                DropdownMenuItem(value: value, child: Text(label)),
+            ],
+            onChanged: _sending
+                ? null
+                : (v) => setState(() => _level = v ?? 'normal'),
+          ),
+          const SizedBox(height: 12),
+          _fieldLabel(c, '标题'),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _title,
+            maxLength: 80,
+            enabled: !_sending,
+            style: TextStyle(color: c.fg, fontSize: 13),
+            decoration: _inputDecoration(c).copyWith(
+              counterText: '',
+              hintText: '给你自己看的通知，≤ 80 字',
+              hintStyle: TextStyle(color: c.muted, fontSize: 13),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _fieldLabel(c, '正文（选填，纯文本）'),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _bodyText,
+            maxLines: 3,
+            enabled: !_sending,
+            style: TextStyle(color: c.fg, fontSize: 13),
+            decoration: _inputDecoration(c).copyWith(
+              hintText: '可留空',
+              hintStyle: TextStyle(color: c.muted, fontSize: 13),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _fieldLabel(c, '链接（选填）'),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _link,
+            enabled: !_sending,
+            keyboardType: TextInputType.url,
+            style: TextStyle(color: c.fg, fontSize: 13),
+            decoration: _inputDecoration(c).copyWith(
+              hintText: 'https://…',
+              hintStyle: TextStyle(color: c.muted, fontSize: 13),
+            ),
+          ),
+          if (_composeError != null) ...[
+            const SizedBox(height: 10),
+            _banner(c, _composeError!, ok: false),
+          ],
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _sending ? null : _sendNotification,
+              child: Text(_sending ? '发送中…' : '发送'),
+            ),
+          ),
+          ListenableBuilder(
+            listenable: _pushWait,
+            builder: (context, _) => PushWaitResult(
+              state: _pushWait.state,
+              onRepull: _repull,
+              repulled: _repulled,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _segment(
+    AppColors c,
+    String label,
+    bool selected,
+    VoidCallback onTap,
+  ) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? c.accentSoft : Colors.transparent,
+          border: Border.all(color: selected ? c.accentBorder : c.border),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? c.accent : c.muted,
+            fontSize: 13,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dropdown(
+    AppColors c, {
+    required String value,
+    required List<(String, String)> items,
+    required ValueChanged<String> onChanged,
+    double width = 120,
+  }) {
+    return Container(
+      width: width,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        border: Border.all(color: c.border),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          isExpanded: true,
+          isDense: true,
+          dropdownColor: c.surface,
+          style: TextStyle(color: c.fg, fontSize: 13),
+          icon: Icon(Icons.arrow_drop_down, size: 18, color: c.muted),
+          items: [
+            for (final (v, label) in items)
+              DropdownMenuItem(
+                value: v,
+                child: Text(label, overflow: TextOverflow.ellipsis),
+              ),
+          ],
+          onChanged: (v) => onChanged(v ?? ''),
+        ),
+      ),
+    );
+  }
+
+  Widget _banner(AppColors c, String msg, {required bool ok}) {
+    final color = ok ? c.ok : c.danger;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: c.surface,
+        border: Border.all(color: c.border),
+      ),
+      child: Text(msg, style: TextStyle(color: color, fontSize: 13)),
+    );
+  }
+
+  Widget _fieldLabel(AppColors c, String text) {
+    return Text(
+      text,
+      style: TextStyle(
+        color: c.muted,
+        fontSize: 11,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0.8,
+      ),
+    );
+  }
+
+  InputDecoration _inputDecoration(AppColors c) {
+    return InputDecoration(
+      isDense: true,
+      filled: true,
+      fillColor: c.surface2,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      border: OutlineInputBorder(
+        borderSide: BorderSide(color: c.border),
+        borderRadius: BorderRadius.circular(4),
+      ),
+    );
   }
 
   Widget _errorBanner(AppColors c, String msg) {
@@ -440,10 +874,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
           ),
           TextButton(
             onPressed: () => _load(),
-            child: Text(
-              '重试',
-              style: TextStyle(color: c.accent, fontSize: 13),
-            ),
+            child: Text('重试', style: TextStyle(color: c.accent, fontSize: 13)),
           ),
         ],
       ),

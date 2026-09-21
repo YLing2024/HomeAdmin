@@ -144,6 +144,23 @@ void main() {
     });
   });
 
+  group('通知级别', () {
+    test('选项与后端 NOTIFICATION_LEVELS 一一对应', () {
+      expect(kNotificationLevelOptions.map((e) => e.$1).toList(), [
+        'urgent',
+        'normal',
+        'digest',
+      ]);
+    });
+
+    test('级别中文名，未知回退「通知」', () {
+      expect(notificationLevelLabel('urgent'), '紧急');
+      expect(notificationLevelLabel('normal'), '常规');
+      expect(notificationLevelLabel('digest'), '汇总');
+      expect(notificationLevelLabel('other'), '通知');
+    });
+  });
+
   group('辅助函数', () {
     test('本地通知 id 收敛到 int31 正数', () {
       expect(notificationLocalId(1), 1);

@@ -3,6 +3,27 @@ import 'dart:convert';
 /// 通知级别（与 admin-server 契约一致，字段名/取值不要改）
 const String kNotificationLevelUrgent = 'urgent';
 
+/// 通知级别选项（value 与后端 NOTIFICATION_LEVELS 一一对应），发通知表单使用。
+const List<(String, String)> kNotificationLevelOptions = [
+  ('urgent', '紧急'),
+  ('normal', '常规'),
+  ('digest', '汇总'),
+];
+
+/// 级别中文名（未知级别回退「通知」），列表与筛选共用。
+String notificationLevelLabel(String level) {
+  switch (level) {
+    case 'urgent':
+      return '紧急';
+    case 'digest':
+      return '汇总';
+    case 'normal':
+      return '常规';
+    default:
+      return '通知';
+  }
+}
+
 /// 通知条目，字段与 `GET /api/admin/notifications` 的 item 一一对应。
 ///
 /// 重要：后端 `ts` 与 `readAt` 均为 **epoch 秒**（admin-server `notificationView`），

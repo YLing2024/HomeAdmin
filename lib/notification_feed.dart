@@ -59,4 +59,14 @@ class NotificationFeed {
     }
     unread = 0;
   }
+
+  /// 单条删除（本地用户动作，允许就地更新）；返回被删除的条目。
+  /// 删除未读条目时同步扣减未读数（调用方随后用 [NotificationStore.setUnread] 同步）。
+  NotificationItem? remove(int id) {
+    final index = items.indexWhere((x) => x.id == id);
+    if (index == -1) return null;
+    final removed = items.removeAt(index);
+    if (removed.isUnread && unread > 0) unread -= 1;
+    return removed;
+  }
 }

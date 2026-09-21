@@ -76,8 +76,7 @@ class _CommandPaletteDialogState extends State<CommandPaletteDialog> {
       PaletteItem('terminal', '打开终端', '服务器 Web 终端', () => widget.onSwitchTab(4)),
       PaletteItem('files', '跳到文件页', '浏览与管理文件', () => widget.onSwitchTab(5)),
       PaletteItem('notifications', '跳到通知页', '查看通知中心', () => widget.onSwitchTab(6)),
-      PaletteItem('notifications-manage', '跳到通知管理页', '发通知与批量管理', () => widget.onSwitchTab(7)),
-      PaletteItem('debug', '跳到调试页', '通知调试工具', () => widget.onSwitchTab(8)),
+      PaletteItem('debug', '跳到调试页', '通知调试工具', () => widget.onSwitchTab(7)),
       PaletteItem('pwd', '重置验证器', '更换 TOTP 验证器', widget.onShowReset),
       PaletteItem('logout', '退出登录', '安全退出', widget.onLogout),
     ];

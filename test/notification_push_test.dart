@@ -176,5 +176,30 @@ void main() {
       expect(feed.unread, 0);
       expect(feed.items.every((x) => !x.isUnread), true);
     });
+
+    test('单条删除：移除条目并扣减未读', () {
+      final feed = NotificationFeed();
+      feed.replaceAll([_item(2), _item(1)], 2);
+      final removed = feed.remove(2);
+      expect(removed?.id, 2);
+      expect(feed.items.map((x) => x.id).toList(), [1]);
+      expect(feed.unread, 1);
+    });
+
+    test('删除已读条目不改变未读数', () {
+      final feed = NotificationFeed();
+      feed.replaceAll([_item(2, readAt: 1234), _item(1)], 1);
+      feed.remove(2);
+      expect(feed.items.map((x) => x.id).toList(), [1]);
+      expect(feed.unread, 1);
+    });
+
+    test('删除不存在的 id 返回 null 且不改动列表', () {
+      final feed = NotificationFeed();
+      feed.replaceAll([_item(1)], 1);
+      expect(feed.remove(99), isNull);
+      expect(feed.items.single.id, 1);
+      expect(feed.unread, 1);
+    });
   });
 }

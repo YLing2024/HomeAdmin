@@ -748,6 +748,15 @@ class Api {
     return count is num ? count.toInt() : 0;
   }
 
+  /// DELETE /api/admin/notifications/{id} -> { ok: true }
+  static Future<void> notificationDelete(int id) async {
+    final res = await http.delete(
+      _uri(kApiBase, '/api/admin/notifications/$id'),
+      headers: _headers(),
+    );
+    _decode(res);
+  }
+
   /// POST /api/admin/notifications
   ///   { level, source, title, body?, link?, dedupKey? } -> 201 { id, ts }
   ///
@@ -766,42 +775,6 @@ class Api {
       status: res.statusCode,
       body: utf8.decode(res.bodyBytes),
     );
-  }
-
-  /// GET /api/admin/notifications/stats -> { total, unread, sources: [{source, count}] }
-  /// sources 已按条数降序（来源相同时按字典序），前端只展示 Top 5。
-  static Future<Map<String, dynamic>> notificationStats() async {
-    final res = await http.get(
-      _uri(kApiBase, '/api/admin/notifications/stats'),
-      headers: _headers(),
-    );
-    return _decode(res);
-  }
-
-  /// POST /api/admin/notifications/bulk-delete
-  ///   { level?, source?, unreadOnly?, readOnly?, dryRun? } -> { ok: true, count: N }
-  /// dryRun=true 只统计不删除，供二次确认时拿到准确条数；无筛选即「全部删除」。
-  static Future<int> notificationBulkDelete({
-    String? level,
-    String? source,
-    bool unreadOnly = false,
-    bool readOnly = false,
-    bool dryRun = false,
-  }) async {
-    final body = <String, dynamic>{};
-    if (level != null && level.isNotEmpty) body['level'] = level;
-    if (source != null && source.isNotEmpty) body['source'] = source;
-    if (unreadOnly) body['unreadOnly'] = true;
-    if (readOnly) body['readOnly'] = true;
-    if (dryRun) body['dryRun'] = true;
-    final res = await http.post(
-      _uri(kApiBase, '/api/admin/notifications/bulk-delete'),
-      headers: _headers(),
-      body: jsonEncode(body),
-    );
-    final data = _decode(res);
-    final count = data['count'];
-    return count is num ? count.toInt() : 0;
   }
 
   /* ============ SSE 实时流 ============ */
