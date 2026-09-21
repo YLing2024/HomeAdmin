@@ -8,6 +8,7 @@ import 'notification_feed.dart';
 import 'notification_model.dart';
 import 'notification_push.dart';
 import 'notification_store.dart';
+import 'notification_type_filter.dart';
 import 'push_wait_result.dart';
 import 'theme.dart';
 
@@ -46,6 +47,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
   bool _unreadOnly = false;
   String _levelFilter = '';
   String _sourceFilter = '';
+
+  /// 通知类别键（服务端定义），空串为「全部」；列表请求带 `type=<key>`。
+  String _typeFilter = '';
+
+  /// 服务端返回的类别（含停用，用于显示历史通知类别名）；接口失败时为空。
+  List<NotificationType> _types = const [];
   final Set<String> _sources = {};
 
   /* ===== 发通知（页头内联表单） ===== */
@@ -65,6 +72,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
     _scroll.addListener(_onScroll);
     NotificationStore.incoming.addListener(_onIncoming);
     NotificationStore.reloadTick.addListener(_onReloadRequest);
+    _loadTypes();
     _load();
   }
 
@@ -73,6 +81,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
     super.didUpdateWidget(oldWidget);
     // 从其它 Tab 切回本页：静默刷新，保留列表避免闪烁
     if (widget.active && !oldWidget.active) {
+      _loadTypes();
       _load(silent: _feed.items.isNotEmpty);
     }
   }
@@ -114,6 +123,31 @@ class _NotificationsPageState extends State<NotificationsPage> {
     _load(silent: _feed.items.isNotEmpty);
   }
 
+  /// 拉取服务端定义的类别清单（进通知页 / 切回本页时）。
+  ///
+  /// 接口失败 → 类别置空、筛选回落「全部」，**不阻塞通知列表**（列表仍照常加载）。
+  Future<void> _loadTypes() async {
+    try {
+      final types = await Api.notificationTypes();
+      if (!mounted) return;
+      setState(() {
+        _types = types;
+        // 选中的类别在新清单里不存在 / 已停用 → 回落「全部」
+        final stillValid = types.any(
+          (t) => t.key == _typeFilter && t.enabled,
+        );
+        if (!stillValid) _typeFilter = '';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _types = const [];
+        _typeFilter = '';
+      });
+      await handleAuthError(context, e);
+    }
+  }
+
   Future<void> _load({bool silent = false}) async {
     if (!silent) {
       setState(() {
@@ -127,6 +161,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
         unreadOnly: _unreadOnly,
         level: _levelFilter,
         source: _sourceFilter,
+        type: _typeFilter,
       );
       final list = _itemsOf(data);
       final unread = data['unread'];
@@ -162,6 +197,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
         unreadOnly: _unreadOnly,
         level: _levelFilter,
         source: _sourceFilter,
+        type: _typeFilter,
       );
       final list = _itemsOf(data);
       if (!mounted) return;
@@ -198,6 +234,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
     if (_unreadOnly && !item.isUnread) return false;
     if (_levelFilter.isNotEmpty && item.level != _levelFilter) return false;
     if (_sourceFilter.isNotEmpty && item.source != _sourceFilter) return false;
+    if (_typeFilter.isNotEmpty && item.category != _typeFilter) return false;
     return true;
   }
 
@@ -218,6 +255,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
   void _setSourceFilter(String value) {
     if (_sourceFilter == value) return;
     setState(() => _sourceFilter = value);
+    _load();
+  }
+
+  void _setTypeFilter(String value) {
+    if (_typeFilter == value) return;
+    setState(() => _typeFilter = value);
     _load();
   }
 
@@ -380,7 +423,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
     final c = context.c;
     return RefreshIndicator(
       color: c.accent,
-      onRefresh: () => _load(silent: _feed.items.isNotEmpty),
+      onRefresh: () async {
+        // 类别清单可能被后台新增/改名/停用，随下拉刷新一起重拉
+        await _loadTypes();
+        await _load(silent: _feed.items.isNotEmpty);
+      },
       child: CustomScrollView(
         controller: _scroll,
         physics: const AlwaysScrollableScrollPhysics(),
@@ -454,6 +501,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
         children: [
           _segment(c, '全部', !_unreadOnly, () => _setUnreadOnly(false)),
           _segment(c, '未读', _unreadOnly, () => _setUnreadOnly(true)),
+          NotificationTypeFilter(
+            types: _types,
+            value: _typeFilter,
+            onChanged: _setTypeFilter,
+          ),
           _dropdown(
             c,
             value: _levelFilter,
@@ -503,7 +555,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
                 Text(
                   _unreadOnly ||
                           _levelFilter.isNotEmpty ||
-                          _sourceFilter.isNotEmpty
+                          _sourceFilter.isNotEmpty ||
+                          _typeFilter.isNotEmpty
                       ? '没有符合条件的通知'
                       : '暂无通知',
                   textAlign: TextAlign.center,
@@ -594,7 +647,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    item.source,
+                    notificationTypeLabel(item.category, _types),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: c.muted, fontSize: 11),

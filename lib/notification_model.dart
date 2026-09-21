@@ -24,6 +24,83 @@ String notificationLevelLabel(String level) {
   }
 }
 
+/// 通知类别（type）：**由服务端定义**，字段与
+/// `GET /api/admin/notifications/types` 的 item 一一对应。
+///
+/// 铁律：客户端不得内置任何类别清单——本类只是服务端返回值的载体，
+/// 筛选器与展示名都从这里来；服务端新增类别无需发版即可出现。
+class NotificationType {
+  const NotificationType({
+    required this.key,
+    required this.label,
+    this.description,
+    this.defaultLevel,
+    this.sort = 0,
+    this.enabled = true,
+    this.count,
+    this.unread,
+  });
+
+  /// 稳定标识，写入与筛选都用它（如 watchdog / monitor）。
+  final String key;
+
+  /// 展示名（服务端可改，如「看门狗」）；空则回退 [key]。
+  final String label;
+  final String? description;
+  final String? defaultLevel;
+  final int sort;
+
+  /// 停用后不出现在筛选器里（历史数据仍在）。
+  final bool enabled;
+
+  /// 当前库内统计（仅供参考，可能缺省）。
+  final int? count;
+  final int? unread;
+
+  /// 展示名：服务端 label 优先，取不到回退原始 key。
+  String get displayLabel => label.isNotEmpty ? label : key;
+
+  factory NotificationType.fromJson(Map<String, dynamic> json) {
+    return NotificationType(
+      key: (json['key'] ?? '').toString(),
+      label: (json['label'] ?? '').toString(),
+      description: _asNonEmptyString(json['description']),
+      defaultLevel: _asNonEmptyString(json['defaultLevel']),
+      sort: _asInt(json['sort']) ?? 0,
+      enabled: _asBool(json['enabled'], fallback: true),
+      count: _asInt(json['count']),
+      unread: _asInt(json['unread']),
+    );
+  }
+}
+
+/// 筛选下拉选项（仅 enabled 的类别）：`[('', '全部类别'), ...(key, label)]`。
+///
+/// 类别清单完全来自 [types]；接口失败时传空列表即降级为只剩「全部类别」，
+/// 不阻塞通知列表加载。
+List<(String, String)> notificationTypeFilterOptions(
+  List<NotificationType> types,
+) {
+  final options = <(String, String)>[('', '全部类别')];
+  for (final t in types) {
+    if (t.key.isEmpty || !t.enabled) continue;
+    options.add((t.key, t.displayLabel));
+  }
+  return options;
+}
+
+/// 显示某条通知的类别名：用服务端给的 label，取不到才回退原始 key。
+///
+/// 注意这里在**全量** [types] 里查（含 enabled=false）：停用类别不再出现在
+/// 筛选器里，但历史通知仍要能显示它的名字。
+String notificationTypeLabel(String key, List<NotificationType> types) {
+  if (key.isEmpty) return '';
+  for (final t in types) {
+    if (t.key == key && t.label.isNotEmpty) return t.label;
+  }
+  return key;
+}
+
 /// 通知条目，字段与 `GET /api/admin/notifications` 的 item 一一对应。
 ///
 /// 重要：后端 `ts` 与 `readAt` 均为 **epoch 秒**（admin-server `notificationView`），
@@ -35,6 +112,7 @@ class NotificationItem {
     required this.level,
     required this.source,
     required this.title,
+    this.type = '',
     this.body,
     this.link,
     this.readAt,
@@ -45,12 +123,19 @@ class NotificationItem {
   final String level;
   final String source;
   final String title;
+
+  /// 通知类别键（服务端 `type`）。老数据 / 缺省时为空，用 [category] 回退。
+  final String type;
   final String? body;
   final String? link;
   final int? readAt;
 
   bool get isUrgent => level == kNotificationLevelUrgent;
   bool get isUnread => readAt == null;
+
+  /// 类别键：优先用服务端 `type`；缺省时按服务端写入规则回退 `source`
+  /// （未传 type 的写入方以 source 作为类别键）。
+  String get category => type.isNotEmpty ? type : source;
 
   factory NotificationItem.fromJson(Map<String, dynamic> json) {
     return NotificationItem(
@@ -59,6 +144,7 @@ class NotificationItem {
       level: (json['level'] ?? 'normal').toString(),
       source: (json['source'] ?? '').toString(),
       title: (json['title'] ?? '').toString(),
+      type: (json['type'] ?? '').toString(),
       body: _asNonEmptyString(json['body']),
       link: _asNonEmptyString(json['link']),
       readAt: _asInt(json['readAt']),
@@ -71,6 +157,7 @@ class NotificationItem {
         'level': level,
         'source': source,
         'title': title,
+        'type': type,
         'body': body,
         'link': link,
         'readAt': readAt,
@@ -82,6 +169,7 @@ class NotificationItem {
         level: level,
         source: source,
         title: title,
+        type: type,
         body: body,
         link: link,
         readAt: readAt ?? this.readAt,
@@ -99,6 +187,16 @@ String? _asNonEmptyString(Object? value) {
   final s = value?.toString();
   if (s == null || s.isEmpty) return null;
   return s;
+}
+
+/// 兼容服务端 `enabled` 的多种表示：bool / 0-1 / 'true' / '1'。
+bool _asBool(Object? value, {required bool fallback}) {
+  if (value == null) return fallback;
+  if (value is bool) return value;
+  if (value is num) return value != 0;
+  final s = value.toString().trim().toLowerCase();
+  if (s.isEmpty) return fallback;
+  return s == 'true' || s == '1' || s == 'yes';
 }
 
 /// 单条 SSE 帧（event + data），不含注释与 retry 行。

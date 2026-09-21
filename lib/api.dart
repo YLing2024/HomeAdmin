@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'notification_model.dart';
+
 // 构建时必须带 --dart-define 注入真实地址，否则将回退到占位域、连不上后端：
 //   flutter build apk --release --dart-define=API_BASE=... --dart-define=AUTH_BASE=...
 
@@ -706,26 +708,47 @@ class Api {
 
   /* ============ 通知中心 ============ */
 
-  /// GET /api/admin/notifications?limit=&before=&unread=1&level=&source=
-  /// → { items: [{id, ts, level, source, title, body, link, readAt}], unread, total }
+  /// GET /api/admin/notifications?limit=&before=&unread=1&level=&source=&type=
+  /// → { items: [{id, ts, level, source, type, title, body, link, readAt}], unread, total }
   /// ts / readAt 为 epoch 秒；before 传列表最后一条的 id（按 id 倒序翻页）。
+  /// type 为通知类别（服务端定义），与 unread / level / source 可叠加。
   static Future<Map<String, dynamic>> notifications({
     int limit = 50,
     int? before,
     bool unreadOnly = false,
     String? level,
     String? source,
+    String? type,
   }) async {
     final query = <String, String>{'limit': '$limit'};
     if (before != null) query['before'] = '$before';
     if (unreadOnly) query['unread'] = '1';
     if (level != null && level.isNotEmpty) query['level'] = level;
     if (source != null && source.isNotEmpty) query['source'] = source;
+    if (type != null && type.isNotEmpty) query['type'] = type;
     final res = await http.get(
       _uri(kApiBase, '/api/admin/notifications', query),
       headers: _headers(),
     );
     return _decode(res);
+  }
+
+  /// GET /api/admin/notifications/types
+  /// → { types: [{ key, label, description, defaultLevel, sort, enabled, count, unread }] }
+  ///
+  /// 类别由服务端定义，客户端**不内置任何清单**；服务端新增类别无需发版。
+  static Future<List<NotificationType>> notificationTypes() async {
+    final res = await http.get(
+      _uri(kApiBase, '/api/admin/notifications/types'),
+      headers: _headers(),
+    );
+    final data = _decode(res);
+    final raw = data['types'];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => NotificationType.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
   }
 
   /// POST /api/admin/notifications/{id}/read -> { ok: true }
