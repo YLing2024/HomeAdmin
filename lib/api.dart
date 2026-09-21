@@ -35,6 +35,38 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+/// 原始 HTTP 调用结果：调试页展示「最近一次请求的状态码与响应体」用。
+///
+/// 与 [ApiException] 不同，这类调用**不抛异常**：无论 2xx 还是 4xx/5xx 都原样
+/// 返回，方便把真实状态码与响应体摆到调试界面上排查。
+class ApiCallResult {
+  const ApiCallResult({required this.status, required this.body});
+
+  final int status;
+  final String body;
+
+  bool get ok => status >= 200 && status < 300;
+
+  /// 解析响应体 JSON（非对象或解析失败返回 null）。
+  Map<String, dynamic>? get json {
+    try {
+      final decoded = jsonDecode(body);
+      return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 创建通知返回的 id（`201 { id, ts }`）；无则 null。
+  int? get id {
+    final v = json?['id'];
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v);
+    return null;
+  }
+}
+
 /// REST API 封装：认证中心 token 登录 / 系统监控 / 上传下载 / TOTP 重置 / 博客管理
 class Api {
   Api._();
@@ -674,17 +706,21 @@ class Api {
 
   /* ============ 通知中心 ============ */
 
-  /// GET /api/admin/notifications?limit=&before=&unread=1
+  /// GET /api/admin/notifications?limit=&before=&unread=1&level=&source=
   /// → { items: [{id, ts, level, source, title, body, link, readAt}], unread, total }
   /// ts / readAt 为 epoch 秒；before 传列表最后一条的 id（按 id 倒序翻页）。
   static Future<Map<String, dynamic>> notifications({
     int limit = 50,
     int? before,
     bool unreadOnly = false,
+    String? level,
+    String? source,
   }) async {
     final query = <String, String>{'limit': '$limit'};
     if (before != null) query['before'] = '$before';
     if (unreadOnly) query['unread'] = '1';
+    if (level != null && level.isNotEmpty) query['level'] = level;
+    if (source != null && source.isNotEmpty) query['source'] = source;
     final res = await http.get(
       _uri(kApiBase, '/api/admin/notifications', query),
       headers: _headers(),
@@ -706,6 +742,62 @@ class Api {
     final res = await http.post(
       _uri(kApiBase, '/api/admin/notifications/read-all'),
       headers: _headers(),
+    );
+    final data = _decode(res);
+    final count = data['count'];
+    return count is num ? count.toInt() : 0;
+  }
+
+  /// POST /api/admin/notifications
+  ///   { level, source, title, body?, link?, dedupKey? } -> 201 { id, ts }
+  ///
+  /// 调试页发测试通知用。为展示「最近一次调用的状态码与响应体」，这里不抛异常，
+  /// 原样返回 [ApiCallResult]；401 仍触发全局登出（与其它请求一致）。
+  static Future<ApiCallResult> createNotification(
+    Map<String, dynamic> payload,
+  ) async {
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/notifications'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 401) _notifyAuthRequired();
+    return ApiCallResult(
+      status: res.statusCode,
+      body: utf8.decode(res.bodyBytes),
+    );
+  }
+
+  /// GET /api/admin/notifications/stats -> { total, unread, sources: [{source, count}] }
+  /// sources 已按条数降序（来源相同时按字典序），前端只展示 Top 5。
+  static Future<Map<String, dynamic>> notificationStats() async {
+    final res = await http.get(
+      _uri(kApiBase, '/api/admin/notifications/stats'),
+      headers: _headers(),
+    );
+    return _decode(res);
+  }
+
+  /// POST /api/admin/notifications/bulk-delete
+  ///   { level?, source?, unreadOnly?, readOnly?, dryRun? } -> { ok: true, count: N }
+  /// dryRun=true 只统计不删除，供二次确认时拿到准确条数；无筛选即「全部删除」。
+  static Future<int> notificationBulkDelete({
+    String? level,
+    String? source,
+    bool unreadOnly = false,
+    bool readOnly = false,
+    bool dryRun = false,
+  }) async {
+    final body = <String, dynamic>{};
+    if (level != null && level.isNotEmpty) body['level'] = level;
+    if (source != null && source.isNotEmpty) body['source'] = source;
+    if (unreadOnly) body['unreadOnly'] = true;
+    if (readOnly) body['readOnly'] = true;
+    if (dryRun) body['dryRun'] = true;
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/notifications/bulk-delete'),
+      headers: _headers(),
+      body: jsonEncode(body),
     );
     final data = _decode(res);
     final count = data['count'];

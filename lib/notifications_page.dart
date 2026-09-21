@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
 import 'login_page.dart';
+import 'notification_feed.dart';
 import 'notification_model.dart';
 import 'notification_store.dart';
 import 'theme.dart';
@@ -25,20 +26,19 @@ class _NotificationsPageState extends State<NotificationsPage> {
   static const int _pageSize = 50;
 
   final ScrollController _scroll = ScrollController();
-  final List<NotificationItem> _items = [];
+  final NotificationFeed _feed = NotificationFeed(pageSize: _pageSize);
 
   bool _loading = true;
   bool _loadingMore = false;
-  bool _hasMore = true;
   bool _markingAll = false;
   String? _error;
-  int _unread = 0;
 
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_onScroll);
     NotificationStore.incoming.addListener(_onIncoming);
+    NotificationStore.reloadTick.addListener(_onReloadRequest);
     _load();
   }
 
@@ -46,7 +46,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
   void didUpdateWidget(covariant NotificationsPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     // 从其它 Tab 切回本页：静默刷新，保留列表避免闪烁
-    if (widget.active && !oldWidget.active) _load(silent: _items.isNotEmpty);
+    if (widget.active && !oldWidget.active) {
+      _load(silent: _feed.items.isNotEmpty);
+    }
   }
 
   @override
@@ -54,6 +56,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
     NotificationStore.incoming.removeListener(_onIncoming);
+    NotificationStore.reloadTick.removeListener(_onReloadRequest);
     super.dispose();
   }
 
@@ -64,14 +67,18 @@ class _NotificationsPageState extends State<NotificationsPage> {
     }
   }
 
+  /// 服务器推送：唯一的新增入口（发送方不做本地插入）。
   void _onIncoming() {
     final item = NotificationStore.incoming.value;
     if (item == null || !mounted) return;
-    if (_items.any((x) => x.id == item.id)) return;
-    setState(() {
-      _items.insert(0, item);
-      _unread += 1;
-    });
+    if (!_feed.applyPush(item)) return; // 同 id 去重更新，不重复计数
+    setState(() {});
+  }
+
+  /// 管理页 / 调试页超时后请求「重新拉取列表」。
+  void _onReloadRequest() {
+    if (!mounted) return;
+    _load(silent: _feed.items.isNotEmpty);
   }
 
   Future<void> _load({bool silent = false}) async {
@@ -87,17 +94,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
       final unread = data['unread'];
       if (!mounted) return;
       setState(() {
-        _items
-          ..clear()
-          ..addAll(list);
-        _unread = unread is num
-            ? unread.toInt()
-            : _items.where((x) => x.isUnread).length;
-        _hasMore = list.length >= _pageSize;
+        _feed.replaceAll(list, unread is num ? unread.toInt() : null);
         _loading = false;
         _error = null;
       });
-      await NotificationStore.setUnread(_unread);
+      await NotificationStore.setUnread(_feed.unread);
     } catch (e) {
       if (!mounted) return;
       final handled = await handleAuthError(context, e);
@@ -111,20 +112,19 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }
 
   Future<void> _loadMore() async {
-    if (_loadingMore || _loading || !_hasMore || _items.isEmpty) return;
+    if (_loadingMore || _loading || !_feed.hasMore || _feed.items.isEmpty) {
+      return;
+    }
     setState(() => _loadingMore = true);
     try {
       final data = await Api.notifications(
         limit: _pageSize,
-        before: _items.last.id,
+        before: _feed.items.last.id,
       );
       final list = _itemsOf(data);
       if (!mounted) return;
       setState(() {
-        for (final item in list) {
-          if (_items.every((x) => x.id != item.id)) _items.add(item);
-        }
-        _hasMore = list.length >= _pageSize;
+        _feed.appendOlder(list);
         _loadingMore = false;
       });
     } catch (e) {
@@ -148,12 +148,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
   Future<void> _open(NotificationItem item) async {
     if (item.isUnread) {
-      final index = _items.indexWhere((x) => x.id == item.id);
-      setState(() {
-        if (index != -1) _items[index] = item.copyWith(readAt: _nowSeconds());
-        if (_unread > 0) _unread -= 1;
-      });
-      await NotificationStore.setUnread(_unread);
+      setState(() => _feed.markRead(item.id, _nowSeconds()));
+      await NotificationStore.setUnread(_feed.unread);
       try {
         await Api.notificationRead(item.id);
       } catch (e) {
@@ -167,19 +163,13 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }
 
   Future<void> _readAll() async {
-    if (_unread == 0 || _markingAll) return;
+    if (_feed.unread == 0 || _markingAll) return;
     setState(() => _markingAll = true);
     try {
       await Api.notificationReadAll();
       if (!mounted) return;
-      final now = _nowSeconds();
       setState(() {
-        for (var i = 0; i < _items.length; i++) {
-          if (_items[i].isUnread) {
-            _items[i] = _items[i].copyWith(readAt: now);
-          }
-        }
-        _unread = 0;
+        _feed.markAllRead(_nowSeconds());
         _markingAll = false;
       });
       await NotificationStore.setUnread(0);
@@ -208,7 +198,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
     final c = context.c;
     return RefreshIndicator(
       color: c.accent,
-      onRefresh: () => _load(silent: _items.isNotEmpty),
+      onRefresh: () => _load(silent: _feed.items.isNotEmpty),
       child: Column(
         children: [
           _header(c),
@@ -234,7 +224,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
             ),
           ),
           const SizedBox(width: 10),
-          if (_unread > 0)
+          if (_feed.unread > 0)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
               decoration: BoxDecoration(
@@ -243,13 +233,13 @@ class _NotificationsPageState extends State<NotificationsPage> {
                 borderRadius: BorderRadius.circular(3),
               ),
               child: Text(
-                '未读 $_unread',
+                '未读 ${_feed.unread}',
                 style: TextStyle(color: c.accent, fontSize: 11),
               ),
             ),
           const Spacer(),
           TextButton(
-            onPressed: (_unread == 0 || _markingAll) ? null : _readAll,
+            onPressed: (_feed.unread == 0 || _markingAll) ? null : _readAll,
             child: Text(
               _markingAll ? '处理中…' : '全部已读',
               style: TextStyle(color: c.accent, fontSize: 13),
@@ -261,17 +251,17 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }
 
   Widget _body(AppColors c) {
-    if (_loading && _items.isEmpty) {
+    if (_loading && _feed.items.isEmpty) {
       return const Center(child: CircularProgressIndicator(strokeWidth: 2));
     }
-    if (_error != null && _items.isEmpty) {
+    if (_error != null && _feed.items.isEmpty) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [_errorBanner(c, _error!)],
       );
     }
-    if (_items.isEmpty) {
+    if (_feed.items.isEmpty) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -295,12 +285,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
       controller: _scroll,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      itemCount: _items.length + 1,
+      itemCount: _feed.items.length + 1,
       itemBuilder: (_, i) {
-        if (i == _items.length) return _footer(c);
+        if (i == _feed.items.length) return _footer(c);
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
-          child: _itemTile(c, _items[i]),
+          child: _itemTile(c, _feed.items[i]),
         );
       },
     );
@@ -313,7 +303,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
         child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
       );
     }
-    if (_hasMore) {
+    if (_feed.hasMore) {
       return const SizedBox(height: 18);
     }
     return Padding(

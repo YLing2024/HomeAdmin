@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'notification_model.dart';
+import 'notification_push.dart';
 
 /// 主 isolate 与前台服务 isolate 共享的通知状态（未读 / 最后心跳 / 服务是否运行）。
 ///
@@ -27,7 +28,20 @@ class NotificationStore {
   static final ValueNotifier<NotificationItem?> incoming =
       ValueNotifier<NotificationItem?>(null);
 
+  /// 最近到达的服务器推送（带到达时刻），供发送方「等待推送」匹配用。
+  ///
+  /// 服务端先 broadcast 再回 HTTP 响应，SSE 帧可能早于 POST 的 await 恢复到达，
+  /// 因此必须留一小段历史缓冲，否则正常路径会被误判为超时。
+  static final List<NotificationPushRecord> recentPushes = [];
+
+  /// 通知页「重新拉取列表」信号：管理页 / 调试页在等待超时后自增即触发重拉。
+  /// 这是显式用户动作，不属于乐观更新。
+  static final ValueNotifier<int> reloadTick = ValueNotifier<int>(0);
+
   static bool get _android => !kIsWeb && Platform.isAndroid;
+
+  /// 请求通知展示页重新拉取列表（用户主动触发）。
+  static void requestReload() => reloadTick.value = reloadTick.value + 1;
 
   /// App 启动 / 回到前台时，从服务侧存储恢复状态。
   static Future<void> syncFromService() async {
@@ -59,9 +73,24 @@ class NotificationStore {
         _applyHeartbeat(map);
         final item = map['item'];
         if (item is Map) {
-          incoming.value =
+          final parsed =
               NotificationItem.fromJson(Map<String, dynamic>.from(item));
+          // 先入历史再通知：等待方在 incoming 监听里会重扫历史，
+          // 若顺序反了会在监听时看不到这条（实测漏判为超时）。
+          _recordPush(parsed);
+          incoming.value = parsed;
         }
+    }
+  }
+
+  /// 记录一条推送到达（用于等待匹配；顺带按窗口 / 上限清理）。
+  static void _recordPush(NotificationItem item) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    recentPushes.add(NotificationPushRecord(item: item, atMillis: now));
+    while (recentPushes.length > kPushHistoryMax ||
+        (recentPushes.isNotEmpty &&
+            now - recentPushes.first.atMillis > kPushHistoryWindowMs)) {
+      recentPushes.removeAt(0);
     }
   }
 

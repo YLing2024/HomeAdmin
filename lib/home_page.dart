@@ -4,11 +4,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'blog_page.dart';
 import 'command_palette.dart';
+import 'debug_page.dart';
 import 'files_page.dart';
 import 'login_page.dart';
 import 'manage_page.dart';
 import 'notification_service.dart';
 import 'notification_store.dart';
+import 'notification_manage_page.dart';
 import 'notifications_page.dart';
 import 'reset_totp_page.dart';
 import 'system_page.dart';
@@ -70,7 +72,7 @@ class _HomePageState extends State<HomePage> {
     final sp = await SharedPreferences.getInstance();
     final saved = sp.getString('admin_tab');
     if (!mounted) return;
-    // 顺序与 Web 对齐：系统 / 版本 / 博客 / 管理 / 终端 / 文件 / 通知
+    // 顺序与 Web 对齐：系统 / 版本 / 博客 / 管理 / 终端 / 文件 / 通知 / 通知管理 / 调试
     final map = {
       'system': 0,
       'version': 1,
@@ -79,6 +81,8 @@ class _HomePageState extends State<HomePage> {
       'terminal': 4,
       'files': 5,
       'notifications': 6,
+      'notifications-manage': 7,
+      'debug': 8,
     };
     setState(() => _tab = map[saved] ?? 0);
   }
@@ -95,6 +99,8 @@ class _HomePageState extends State<HomePage> {
       'terminal',
       'files',
       'notifications',
+      'notifications-manage',
+      'debug',
     ];
     await sp.setString('admin_tab', names[i]);
   }
@@ -203,6 +209,11 @@ class _HomePageState extends State<HomePage> {
                       active: _tab == 6,
                       key: const ValueKey('notifications'),
                     ),
+                    NotificationManagePage(
+                      active: _tab == 7,
+                      key: const ValueKey('notifications-manage'),
+                    ),
+                    DebugPage(active: _tab == 8, key: const ValueKey('debug')),
                   ],
                 ),
               ),
@@ -236,6 +247,8 @@ const List<_NavItem> _navItems = [
   _NavItem('终端', Icons.terminal_outlined, Icons.terminal),
   _NavItem('文件', Icons.folder_outlined, Icons.folder),
   _NavItem('通知', Icons.notifications_outlined, Icons.notifications),
+  _NavItem('通知管理', Icons.notification_add_outlined, Icons.notification_add),
+  _NavItem('调试', Icons.bug_report_outlined, Icons.bug_report),
 ];
 
 /// 左侧抽屉：纵向列出全部导航条目；选中项用琥珀色 + 轻微底色。
