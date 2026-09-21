@@ -23,6 +23,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _tab = 0;
   bool _cmdOpen = false;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   void initState() {
@@ -73,6 +74,10 @@ class _HomePageState extends State<HomePage> {
     await sp.setString('admin_tab', names[i]);
   }
 
+  void _openDrawer() {
+    _scaffoldKey.currentState?.openDrawer();
+  }
+
   void _openCommandPalette() {
     if (_cmdOpen) return;
     setState(() => _cmdOpen = true);
@@ -94,6 +99,7 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final c = context.c;
     return Scaffold(
+      key: _scaffoldKey,
       body: GlowBackground(
         child: SafeArea(
           bottom: false,
@@ -103,6 +109,11 @@ class _HomePageState extends State<HomePage> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
                 child: Row(
                   children: [
+                    IconButton(
+                      onPressed: _openDrawer,
+                      tooltip: '导航菜单',
+                      icon: Icon(Icons.menu, color: c.muted),
+                    ),
                     Container(
                       width: 38,
                       height: 38,
@@ -159,41 +170,153 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: _selectTab,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.monitor_heart_outlined),
-            selectedIcon: Icon(Icons.monitor_heart),
-            label: '系统',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.article_outlined),
-            selectedIcon: Icon(Icons.article),
-            label: '版本',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.edit_note),
-            selectedIcon: Icon(Icons.edit_note),
-            label: '博客',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: '管理',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.terminal_outlined),
-            selectedIcon: Icon(Icons.terminal),
-            label: '终端',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.folder_outlined),
-            selectedIcon: Icon(Icons.folder),
-            label: '文件',
-          ),
-        ],
+      drawer: _HomeDrawer(
+        current: _tab,
+        onSelect: _selectTab,
+        onClose: () => _scaffoldKey.currentState?.closeDrawer(),
+      ),
+    );
+  }
+}
+
+/// 侧栏导航条目（文字与顺序 = 原底部 NavigationBar，一字不改）
+class _NavItem {
+  const _NavItem(this.label, this.icon, this.selectedIcon);
+
+  final String label;
+  final IconData icon;
+  final IconData selectedIcon;
+}
+
+const List<_NavItem> _navItems = [
+  _NavItem('系统', Icons.monitor_heart_outlined, Icons.monitor_heart),
+  _NavItem('版本', Icons.article_outlined, Icons.article),
+  _NavItem('博客', Icons.edit_note, Icons.edit_note),
+  _NavItem('管理', Icons.settings_outlined, Icons.settings),
+  _NavItem('终端', Icons.terminal_outlined, Icons.terminal),
+  _NavItem('文件', Icons.folder_outlined, Icons.folder),
+];
+
+/// 左侧抽屉：纵向列出全部导航条目；选中项用琥珀色 + 轻微底色。
+class _HomeDrawer extends StatelessWidget {
+  const _HomeDrawer({
+    required this.current,
+    required this.onSelect,
+    required this.onClose,
+  });
+
+  final int current;
+  final void Function(int index) onSelect;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Drawer(
+      backgroundColor: c.surface,
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
+      // 直角 + 发丝线，沿用 theme.dart 的设计语言
+      shape: RoundedRectangleBorder(side: BorderSide(color: c.border)),
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
+              child: Row(
+                children: [
+                  Container(
+                    width: 24,
+                    height: 24,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: c.fg,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Icon(
+                      Icons.admin_panel_settings,
+                      color: c.bg,
+                      size: 15,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Admin',
+                    style: TextStyle(
+                      color: c.fg,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.6,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                children: [
+                  for (var i = 0; i < _navItems.length; i++)
+                    _DrawerNavTile(
+                      item: _navItems[i],
+                      selected: i == current,
+                      onTap: () {
+                        // 先关闭抽屉，再切换面板
+                        onClose();
+                        onSelect(i);
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DrawerNavTile extends StatelessWidget {
+  const _DrawerNavTile({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _NavItem item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return InkWell(
+      onTap: onTap,
+      child: Ink(
+        height: 48,
+        color: selected ? c.accentSoft : Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Row(
+          children: [
+            Icon(
+              selected ? item.selectedIcon : item.icon,
+              size: 20,
+              color: selected ? c.accent : c.muted,
+            ),
+            const SizedBox(width: 14),
+            Text(
+              item.label,
+              style: TextStyle(
+                color: selected ? c.accent : c.muted,
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
