@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'api.dart';
 import 'home_page.dart';
 import 'login_page.dart';
+import 'notification_service.dart';
 import 'theme.dart';
 
 Future<void> main() async {
@@ -10,6 +11,9 @@ Future<void> main() async {
   await Api.restoreToken();
   await ThemePrefs.load();
   Api.onAuthRequired = forceLogout;
+  // 前台服务 isolate 若发现 token 失效，走同一套全局登出
+  onNotificationAuthRequired = forceLogout;
+  await NotificationService.init();
   runApp(const AdminApp());
 }
 

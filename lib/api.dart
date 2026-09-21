@@ -66,6 +66,13 @@ class Api {
     await sp.setString(_tokenKey, value);
   }
 
+  /// 读取本地持久化的 token（供前台服务 isolate 读取，复用同一存储键，
+  /// 不另写一套鉴权；登录态变化仍由 saveToken / logout 维护）。
+  static Future<String> readPersistedToken() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getString(_tokenKey) ?? '';
+  }
+
   static Uri _uri(String base, String path, [Map<String, String>? query]) =>
       Uri.parse('$base$path').replace(queryParameters: query);
 
@@ -663,6 +670,46 @@ class Api {
       throw ApiException('图片上传失败：未返回 URL');
     }
     return url;
+  }
+
+  /* ============ 通知中心 ============ */
+
+  /// GET /api/admin/notifications?limit=&before=&unread=1
+  /// → { items: [{id, ts, level, source, title, body, link, readAt}], unread, total }
+  /// ts / readAt 为 epoch 秒；before 传列表最后一条的 id（按 id 倒序翻页）。
+  static Future<Map<String, dynamic>> notifications({
+    int limit = 50,
+    int? before,
+    bool unreadOnly = false,
+  }) async {
+    final query = <String, String>{'limit': '$limit'};
+    if (before != null) query['before'] = '$before';
+    if (unreadOnly) query['unread'] = '1';
+    final res = await http.get(
+      _uri(kApiBase, '/api/admin/notifications', query),
+      headers: _headers(),
+    );
+    return _decode(res);
+  }
+
+  /// POST /api/admin/notifications/{id}/read -> { ok: true }
+  static Future<void> notificationRead(int id) async {
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/notifications/$id/read'),
+      headers: _headers(),
+    );
+    _decode(res);
+  }
+
+  /// POST /api/admin/notifications/read-all -> { ok: true, count: N }
+  static Future<int> notificationReadAll() async {
+    final res = await http.post(
+      _uri(kApiBase, '/api/admin/notifications/read-all'),
+      headers: _headers(),
+    );
+    final data = _decode(res);
+    final count = data['count'];
+    return count is num ? count.toInt() : 0;
   }
 
   /* ============ SSE 实时流 ============ */

@@ -7,6 +7,9 @@ import 'command_palette.dart';
 import 'files_page.dart';
 import 'login_page.dart';
 import 'manage_page.dart';
+import 'notification_service.dart';
+import 'notification_store.dart';
+import 'notifications_page.dart';
 import 'reset_totp_page.dart';
 import 'system_page.dart';
 import 'terminal_page.dart';
@@ -29,8 +32,20 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _restoreTab();
+    _initNotifications();
     // 全局 Ctrl/Cmd+K 命令面板（对齐 Web）
     HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  /// 主页挂载即恢复通知状态并确保前台服务在跑；由本地通知冷启动则直达通知页。
+  Future<void> _initNotifications() async {
+    onOpenNotifications = () {
+      if (mounted) _selectTab(6);
+    };
+    final launched = await NotificationService.launchedFromNotification();
+    await NotificationStore.syncFromService();
+    await NotificationService.ensureStarted();
+    if (launched && mounted) await _selectTab(6);
   }
 
   @override
@@ -55,7 +70,7 @@ class _HomePageState extends State<HomePage> {
     final sp = await SharedPreferences.getInstance();
     final saved = sp.getString('admin_tab');
     if (!mounted) return;
-    // 顺序与 Web 对齐：系统 / 版本 / 博客 / 管理 / 终端 / 文件
+    // 顺序与 Web 对齐：系统 / 版本 / 博客 / 管理 / 终端 / 文件 / 通知
     final map = {
       'system': 0,
       'version': 1,
@@ -63,14 +78,24 @@ class _HomePageState extends State<HomePage> {
       'manage': 3,
       'terminal': 4,
       'files': 5,
+      'notifications': 6,
     };
     setState(() => _tab = map[saved] ?? 0);
   }
 
   Future<void> _selectTab(int i) async {
+    if (!mounted) return;
     setState(() => _tab = i);
     final sp = await SharedPreferences.getInstance();
-    const names = ['system', 'version', 'blog', 'manage', 'terminal', 'files'];
+    const names = [
+      'system',
+      'version',
+      'blog',
+      'manage',
+      'terminal',
+      'files',
+      'notifications',
+    ];
     await sp.setString('admin_tab', names[i]);
   }
 
@@ -112,7 +137,18 @@ class _HomePageState extends State<HomePage> {
                     IconButton(
                       onPressed: _openDrawer,
                       tooltip: '导航菜单',
-                      icon: Icon(Icons.menu, color: c.muted),
+                      // 未读 > 0 时在主界面即能看到角标（不必打开抽屉）
+                      icon: ValueListenableBuilder<int>(
+                        valueListenable: NotificationStore.unread,
+                        builder: (context, unread, _) => unread > 0
+                            ? Badge(
+                                label: Text(unread > 99 ? '99+' : '$unread'),
+                                backgroundColor: c.accent,
+                                textColor: c.bg,
+                                child: Icon(Icons.menu, color: c.muted),
+                              )
+                            : Icon(Icons.menu, color: c.muted),
+                      ),
                     ),
                     Container(
                       width: 38,
@@ -153,7 +189,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               Expanded(
-                // IndexedStack：六个面板常驻挂载，切换不销毁各自状态
+                // IndexedStack：面板常驻挂载，切换不销毁各自状态
                 child: IndexedStack(
                   index: _tab,
                   children: [
@@ -163,6 +199,10 @@ class _HomePageState extends State<HomePage> {
                     const ManagePage(key: ValueKey('manage')),
                     TerminalPage(active: _tab == 4, key: const ValueKey('terminal')),
                     FilesPage(active: _tab == 5, key: const ValueKey('files')),
+                    NotificationsPage(
+                      active: _tab == 6,
+                      key: const ValueKey('notifications'),
+                    ),
                   ],
                 ),
               ),
@@ -195,6 +235,7 @@ const List<_NavItem> _navItems = [
   _NavItem('管理', Icons.settings_outlined, Icons.settings),
   _NavItem('终端', Icons.terminal_outlined, Icons.terminal),
   _NavItem('文件', Icons.folder_outlined, Icons.folder),
+  _NavItem('通知', Icons.notifications_outlined, Icons.notifications),
 ];
 
 /// 左侧抽屉：纵向列出全部导航条目；选中项用琥珀色 + 轻微底色。
@@ -255,20 +296,25 @@ class _HomeDrawer extends StatelessWidget {
             ),
             const Divider(height: 1),
             Expanded(
-              child: ListView(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                children: [
-                  for (var i = 0; i < _navItems.length; i++)
-                    _DrawerNavTile(
-                      item: _navItems[i],
-                      selected: i == current,
-                      onTap: () {
-                        // 先关闭抽屉，再切换面板
-                        onClose();
-                        onSelect(i);
-                      },
-                    ),
-                ],
+              child: ValueListenableBuilder<int>(
+                valueListenable: NotificationStore.unread,
+                builder: (context, unread, _) => ListView(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  children: [
+                    for (var i = 0; i < _navItems.length; i++)
+                      _DrawerNavTile(
+                        item: _navItems[i],
+                        selected: i == current,
+                        // 仅「通知」项展示未读数字
+                        badge: i == 6 ? unread : 0,
+                        onTap: () {
+                          // 先关闭抽屉，再切换面板
+                          onClose();
+                          onSelect(i);
+                        },
+                      ),
+                  ],
+                ),
               ),
             ),
           ],
@@ -283,11 +329,15 @@ class _DrawerNavTile extends StatelessWidget {
     required this.item,
     required this.selected,
     required this.onTap,
+    this.badge = 0,
   });
 
   final _NavItem item;
   final bool selected;
   final VoidCallback onTap;
+
+  /// >0 时在右侧显示未读数字（仅通知项使用）
+  final int badge;
 
   @override
   Widget build(BuildContext context) {
@@ -315,6 +365,22 @@ class _DrawerNavTile extends StatelessWidget {
                 letterSpacing: 0.5,
               ),
             ),
+            const Spacer(),
+            if (badge > 0)
+              Container(
+                constraints: const BoxConstraints(minWidth: 20),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: c.accentSoft,
+                  border: Border.all(color: c.accentBorder),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: Text(
+                  badge > 99 ? '99+' : '$badge',
+                  style: TextStyle(color: c.accent, fontSize: 10),
+                ),
+              ),
           ],
         ),
       ),

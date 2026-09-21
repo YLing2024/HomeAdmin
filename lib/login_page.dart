@@ -4,6 +4,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'api.dart';
 import 'home_page.dart';
+import 'notification_service.dart';
 import 'theme.dart';
 
 /// 全局导航 key（供 401 登出跳转使用）
@@ -16,6 +17,8 @@ Future<void> forceLogout() async {
   if (_forceLogoutRunning) return;
   _forceLogoutRunning = true;
   try {
+    // 登出即停通知服务，避免用已失效 token 继续连 SSE
+    await NotificationService.stop();
     await Api.logout();
     final nav = rootNavigatorKey.currentState;
     if (nav != null) {

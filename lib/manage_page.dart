@@ -3,6 +3,9 @@ import 'package:flutter/services.dart';
 
 import 'api.dart';
 import 'login_page.dart';
+import 'notification_model.dart';
+import 'notification_service.dart';
+import 'notification_store.dart';
 import 'theme.dart';
 
 /// 管理 Tab：设备会话管理 + 接口令牌管理（对齐 Web Manage.jsx）
@@ -30,11 +33,16 @@ class _ManagePageState extends State<ManagePage> {
   bool _loadingTokens = true;
   String? _tokensError;
 
+  /* ===== 通知保活 ===== */
+  bool _ignoringBattery = false;
+
   @override
   void initState() {
     super.initState();
     _loadSessions();
     _loadTokens();
+    NotificationStore.syncFromService();
+    _loadBatteryStatus();
   }
 
   @override
@@ -209,6 +217,25 @@ class _ManagePageState extends State<ManagePage> {
         });
       }
     }
+  }
+
+  /* ============ 通知保活 ============ */
+
+  Future<void> _loadBatteryStatus() async {
+    final ignoring = await NotificationService.isIgnoringBatteryOptimizations();
+    if (!mounted) return;
+    setState(() => _ignoringBattery = ignoring);
+  }
+
+  Future<void> _restartNotificationService() async {
+    final ok = await NotificationService.restart();
+    if (!mounted) return;
+    showAppToast(context, ok ? '通知服务已重启' : '通知服务启动失败', ok: ok);
+  }
+
+  Future<void> _requestBatteryOptimization() async {
+    await NotificationService.requestIgnoreBatteryOptimization();
+    await _loadBatteryStatus();
   }
 
   Future<void> _openCreate() async {
@@ -689,7 +716,11 @@ class _ManagePageState extends State<ManagePage> {
     return RefreshIndicator(
       color: c.accent,
       onRefresh: () async {
-        await Future.wait([_loadSessions(), _loadTokens()]);
+        await Future.wait([
+          _loadSessions(),
+          _loadTokens(),
+          NotificationStore.syncFromService(),
+        ]);
       },
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -711,6 +742,10 @@ class _ManagePageState extends State<ManagePage> {
             ],
           ),
           const SizedBox(height: 12),
+          _keepAliveSection(c),
+          const SizedBox(height: 28),
+          Container(height: 1, color: c.border),
+          const SizedBox(height: 28),
           _buildSectionHeader(
             c,
             title: '设备管理',
@@ -801,6 +836,102 @@ class _ManagePageState extends State<ManagePage> {
         const Spacer(),
         action,
       ],
+    );
+  }
+
+  /// 通知保活状态卡：诚实展示服务状态与补救手段（对齐需求「管理页保活状态卡」）
+  Widget _keepAliveSection(AppColors c) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader(
+          c,
+          title: '通知保活',
+          action: TextButton.icon(
+            onPressed: _restartNotificationService,
+            icon: const Icon(Icons.restart_alt, size: 16),
+            label: const Text('重启通知服务'),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '保持与服务器的通知长连接，收到新通知时以系统通知提醒。',
+          style: TextStyle(color: c.muted, fontSize: 12),
+        ),
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: c.surface,
+            border: Border.all(color: c.border),
+          ),
+          child: ValueListenableBuilder<bool>(
+            valueListenable: NotificationStore.running,
+            builder: (context, running, _) => ValueListenableBuilder<int>(
+              valueListenable: NotificationStore.lastHeartbeat,
+              builder: (context, heartbeat, _) => ValueListenableBuilder<int>(
+                valueListenable: NotificationStore.unread,
+                builder: (context, unread, _) => Column(
+                  children: [
+                    _statusRow(
+                      c,
+                      '服务状态',
+                      running ? '运行中' : '未运行',
+                      dot: running,
+                    ),
+                    _statusRow(
+                      c,
+                      '最后心跳',
+                      heartbeat > 0
+                          ? formatNotificationTime(heartbeat)
+                          : '从未',
+                    ),
+                    _statusRow(c, '未读通知', '$unread'),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: _ignoringBattery ? null : _requestBatteryOptimization,
+          icon: Icon(
+            _ignoringBattery ? Icons.check : Icons.battery_saver,
+            size: 16,
+          ),
+          label: Text(_ignoringBattery ? '已忽略电池优化' : '申请忽略电池优化'),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '若厂商系统仍自动结束后台，请在系统设置中允许本应用自启动与后台运行。',
+          style: TextStyle(color: c.muted, fontSize: 12),
+        ),
+      ],
+    );
+  }
+
+  Widget _statusRow(AppColors c, String label, String value, {bool? dot}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Text(label, style: TextStyle(color: c.muted, fontSize: 12)),
+          const Spacer(),
+          if (dot != null) ...[
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: dot ? c.ok : c.danger,
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Text(value, style: TextStyle(color: c.fg, fontSize: 12)),
+        ],
+      ),
     );
   }
 

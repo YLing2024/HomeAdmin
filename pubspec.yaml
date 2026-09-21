@@ -1,7 +1,7 @@
 name: home_admin
 description: "HomeAdmin - 个人管理后台 App"
 publish_to: 'none'
-version: 1.2.0+2004
+version: 1.3.0+2005
 environment:
   sdk: '>=3.9.0 <4.0.0'
 
@@ -20,6 +20,10 @@ dependencies:
   url_launcher: ^6.3.0
   markdown: ^7.2.2
   webview_flutter: ^4.13.1
+  # Android 保活：前台服务（常驻通知 + 独立 isolate）
+  flutter_foreground_task: ^10.0.0
+  # 收到新通知时弹系统本地通知
+  flutter_local_notifications: ^20.1.0
 
 dev_dependencies:
   flutter_test:

@@ -75,6 +75,7 @@ class _CommandPaletteDialogState extends State<CommandPaletteDialog> {
       PaletteItem('manage', '跳到管理页', '设备与接口令牌', () => widget.onSwitchTab(3)),
       PaletteItem('terminal', '打开终端', '服务器 Web 终端', () => widget.onSwitchTab(4)),
       PaletteItem('files', '跳到文件页', '浏览与管理文件', () => widget.onSwitchTab(5)),
+      PaletteItem('notifications', '跳到通知页', '查看通知中心', () => widget.onSwitchTab(6)),
       PaletteItem('pwd', '重置验证器', '更换 TOTP 验证器', widget.onShowReset),
       PaletteItem('logout', '退出登录', '安全退出', widget.onLogout),
     ];
