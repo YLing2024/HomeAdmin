@@ -84,12 +84,22 @@ const String kAuthBase = String.fromEnvironment(
 );
 ```
 
-**构建必须带两个 `--dart-define`**，否则会回退到占位域、连不上后端：
+Hermes 控制台（`lib/hermes_page.dart`）同样是编译期注入：
+
+```dart
+const String kHermesUrl = String.fromEnvironment(
+  'HERMES_URL',
+  defaultValue: 'https://hermes.example.com',
+);
+```
+
+**构建必须带三个 `--dart-define`**，否则会回退到占位域、连不上后端 / 打不开 Hermes：
 
 ```bash
 flutter build apk --release \
   --dart-define=API_BASE=<admin 域名，含 https://> \
-  --dart-define=AUTH_BASE=<认证中心域名，含 https://>
+  --dart-define=AUTH_BASE=<认证中心域名，含 https://> \
+  --dart-define=HERMES_URL=<Hermes 控制台域名，含 https://>
 ```
 
 规则不变：私有地址必须环境注入、不得入库；不要在新代码里继续加硬编码地址。
