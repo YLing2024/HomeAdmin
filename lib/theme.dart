@@ -485,8 +485,8 @@ void showAppToast(BuildContext context, String msg, {bool ok = true}) {
       content: Text(msg, style: TextStyle(color: ok ? c.ok : c.fg)),
       duration: const Duration(milliseconds: 2500),
       behavior: SnackBarBehavior.floating,
+      // 注意：floating + width 与 margin 互斥（SnackBar 构造断言），这里只用 margin。
       margin: const EdgeInsets.only(top: 64, left: 24, right: 24),
-      width: 320,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
     ),
   );

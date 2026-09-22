@@ -296,4 +296,15 @@ String formatNotificationTime(int? epochSeconds, {DateTime? now}) {
   return '${d.year}-${_p2(d.month)}-${_p2(d.day)}';
 }
 
+/// 详情页用的完整时间（本地时区）`YYYY-MM-DD HH:mm:ss`（输入为 epoch 秒）。
+///
+/// 与列表的相对时间 [formatNotificationTime] 不同：详情页要能看清具体时刻。
+/// 无效输入（null / <=0）回退 `—`。用现有 `DateTime`，不引入格式化依赖。
+String formatNotificationFullTime(int? epochSeconds) {
+  if (epochSeconds == null || epochSeconds <= 0) return '—';
+  final d = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000);
+  return '${d.year}-${_p2(d.month)}-${_p2(d.day)} '
+      '${_p2(d.hour)}:${_p2(d.minute)}:${_p2(d.second)}';
+}
+
 String _p2(int n) => n.toString().padLeft(2, '0');

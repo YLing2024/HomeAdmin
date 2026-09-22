@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
 import 'debug_tools.dart' show buildNotificationPayload;
 import 'login_page.dart';
+import 'notification_detail_page.dart';
 import 'notification_feed.dart';
 import 'notification_model.dart';
 import 'notification_push.dart';
 import 'notification_store.dart';
+import 'notification_summary.dart';
 import 'notification_type_filter.dart';
 import 'push_wait_result.dart';
 import 'theme.dart';
@@ -264,22 +265,53 @@ class _NotificationsPageState extends State<NotificationsPage> {
     _load();
   }
 
-  /* ============ 单条已读 / 打开链接 ============ */
+  /* ============ 点条目进详情页 ============ */
 
-  Future<void> _open(NotificationItem item) async {
-    if (item.isUnread) {
+  /// 点条目 → 详情页（顶部返回）。点开**不自动标记已读**：已读由详情页内的
+  /// 独立按钮触发，避免误触丢失未读状态。
+  Future<void> _openDetail(NotificationItem item) async {
+    final action = await Navigator.of(context).push<NotificationDetailAction>(
+      MaterialPageRoute(
+        builder: (_) => NotificationDetailPage(
+          item: item,
+          types: _types,
+          onMarkRead: _markReadFromDetail,
+          onDelete: _deleteFromDetail,
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    setState(() {});
+  }
+
+  /// 详情页「标记已读」：服务端成功后就地更新列表并同步未读；返回是否成功。
+  Future<bool> _markReadFromDetail(NotificationItem item) async {
+    if (!item.isUnread) return true;
+    try {
+      await Api.notificationRead(item.id);
+      if (!mounted) return true;
       setState(() => _feed.markRead(item.id, _nowSeconds()));
       await NotificationStore.setUnread(_feed.unread);
-      try {
-        await Api.notificationRead(item.id);
-      } catch (e) {
-        if (!mounted) return;
-        final handled = await handleAuthError(context, e);
-        if (!handled && mounted) showAppToast(context, '标记已读失败', ok: false);
-      }
+      return true;
+    } catch (e) {
+      if (mounted) await handleAuthError(context, e);
+      return false;
     }
-    final link = item.link;
-    if (link != null && link.isNotEmpty) await _openLink(link);
+  }
+
+  /// 详情页「删除」：服务端成功后从列表移除并同步未读；返回是否成功。
+  Future<bool> _deleteFromDetail(NotificationItem item) async {
+    try {
+      await Api.notificationDelete(item.id);
+      if (!mounted) return true;
+      final removed = _feed.remove(item.id);
+      if (removed != null) setState(() {});
+      await NotificationStore.setUnread(_feed.unread);
+      return true;
+    } catch (e) {
+      if (mounted) await handleAuthError(context, e);
+      return false;
+    }
   }
 
   Future<void> _readAll() async {
@@ -349,18 +381,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
       ),
     );
     return result ?? false;
-  }
-
-  Future<void> _openLink(String url) async {
-    try {
-      final ok = await launchUrl(
-        Uri.parse(url),
-        mode: LaunchMode.externalApplication,
-      );
-      if (!ok && mounted) showAppToast(context, '无法打开链接', ok: false);
-    } catch (_) {
-      if (mounted) showAppToast(context, '无法打开链接', ok: false);
-    }
   }
 
   /* ============ 发通知 ============ */
@@ -613,7 +633,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
     final urgent = item.isUrgent;
     final body = item.body ?? '';
     return InkWell(
-      onTap: () => _open(item),
+      onTap: () => _openDetail(item),
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
@@ -708,10 +728,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
             ),
             if (body.isNotEmpty) ...[
               const SizedBox(height: 6),
-              Text(
+              NotificationBodySummary(
                 body,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
                 style: TextStyle(color: c.muted, fontSize: 12, height: 1.5),
               ),
             ],
