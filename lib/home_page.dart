@@ -6,6 +6,7 @@ import 'blog_page.dart';
 import 'command_palette.dart';
 import 'debug_page.dart';
 import 'files_page.dart';
+import 'hermes_page.dart';
 import 'login_page.dart';
 import 'manage_page.dart';
 import 'notification_service.dart';
@@ -71,7 +72,7 @@ class _HomePageState extends State<HomePage> {
     final sp = await SharedPreferences.getInstance();
     final saved = sp.getString('admin_tab');
     if (!mounted) return;
-    // 顺序与 Web 对齐：系统 / 版本 / 博客 / 管理 / 终端 / 文件 / 通知 / 调试
+    // 顺序与 Web 对齐：系统 / 版本 / 博客 / 管理 / 终端 / 文件 / 通知 / 调试 / Hermes
     final map = {
       'system': 0,
       'version': 1,
@@ -81,6 +82,7 @@ class _HomePageState extends State<HomePage> {
       'files': 5,
       'notifications': 6,
       'debug': 7,
+      'hermes': 8,
     };
     setState(() => _tab = map[saved] ?? 0);
   }
@@ -98,6 +100,7 @@ class _HomePageState extends State<HomePage> {
       'files',
       'notifications',
       'debug',
+      'hermes',
     ];
     await sp.setString('admin_tab', names[i]);
   }
@@ -207,6 +210,7 @@ class _HomePageState extends State<HomePage> {
                       key: const ValueKey('notifications'),
                     ),
                     DebugPage(active: _tab == 7, key: const ValueKey('debug')),
+                    HermesPage(active: _tab == 8, key: const ValueKey('hermes')),
                   ],
                 ),
               ),
@@ -214,7 +218,7 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
       ),
-      drawer: _HomeDrawer(
+      drawer: HomeDrawer(
         current: _tab,
         onSelect: _selectTab,
         onClose: () => _scaffoldKey.currentState?.closeDrawer(),
@@ -223,29 +227,33 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// 侧栏导航条目（文字与顺序 = 原底部 NavigationBar，一字不改）
-class _NavItem {
-  const _NavItem(this.label, this.icon, this.selectedIcon);
+/// 侧栏导航条目（文字与顺序 = 原底部 NavigationBar，一字不改；仅末尾追加 Hermes）
+class HomeNavItem {
+  const HomeNavItem(this.label, this.icon, this.selectedIcon);
 
   final String label;
   final IconData icon;
   final IconData selectedIcon;
 }
 
-const List<_NavItem> _navItems = [
-  _NavItem('系统', Icons.monitor_heart_outlined, Icons.monitor_heart),
-  _NavItem('版本', Icons.article_outlined, Icons.article),
-  _NavItem('博客', Icons.edit_note, Icons.edit_note),
-  _NavItem('管理', Icons.settings_outlined, Icons.settings),
-  _NavItem('终端', Icons.terminal_outlined, Icons.terminal),
-  _NavItem('文件', Icons.folder_outlined, Icons.folder),
-  _NavItem('通知', Icons.notifications_outlined, Icons.notifications),
-  _NavItem('调试', Icons.bug_report_outlined, Icons.bug_report),
+/// 抽屉条目顺序（与 `_restoreTab` / `_selectTab` / IndexedStack 下标一一对应）。
+/// 末尾「Hermes」为追加项，其余顺序与语义一律不动。
+const List<HomeNavItem> homeNavItems = [
+  HomeNavItem('系统', Icons.monitor_heart_outlined, Icons.monitor_heart),
+  HomeNavItem('版本', Icons.article_outlined, Icons.article),
+  HomeNavItem('博客', Icons.edit_note, Icons.edit_note),
+  HomeNavItem('管理', Icons.settings_outlined, Icons.settings),
+  HomeNavItem('终端', Icons.terminal_outlined, Icons.terminal),
+  HomeNavItem('文件', Icons.folder_outlined, Icons.folder),
+  HomeNavItem('通知', Icons.notifications_outlined, Icons.notifications),
+  HomeNavItem('调试', Icons.bug_report_outlined, Icons.bug_report),
+  HomeNavItem('Hermes', Icons.hub_outlined, Icons.hub),
 ];
 
 /// 左侧抽屉：纵向列出全部导航条目；选中项用琥珀色 + 轻微底色。
-class _HomeDrawer extends StatelessWidget {
-  const _HomeDrawer({
+class HomeDrawer extends StatelessWidget {
+  const HomeDrawer({
+    super.key,
     required this.current,
     required this.onSelect,
     required this.onClose,
@@ -306,9 +314,9 @@ class _HomeDrawer extends StatelessWidget {
                 builder: (context, unread, _) => ListView(
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   children: [
-                    for (var i = 0; i < _navItems.length; i++)
+                    for (var i = 0; i < homeNavItems.length; i++)
                       _DrawerNavTile(
-                        item: _navItems[i],
+                        item: homeNavItems[i],
                         selected: i == current,
                         // 仅「通知」项展示未读数字
                         badge: i == 6 ? unread : 0,
@@ -337,7 +345,7 @@ class _DrawerNavTile extends StatelessWidget {
     this.badge = 0,
   });
 
-  final _NavItem item;
+  final HomeNavItem item;
   final bool selected;
   final VoidCallback onTap;
 
