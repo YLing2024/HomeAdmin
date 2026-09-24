@@ -825,6 +825,7 @@ class _SystemPageState extends State<SystemPage> {
           title: 'CPU / 内存 / Swap（%）',
           history: _history,
           series: const [
+            TrendSeries('cpu', 'CPU', tone: TrendTone.muted),
             TrendSeries('mem_percent', '物理内存', tone: TrendTone.accent),
             TrendSeries('swap_percent', 'Swap', tone: TrendTone.ok),
           ],
