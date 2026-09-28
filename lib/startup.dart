@@ -14,15 +14,19 @@ enum StartupPhase { loading, ready }
 /// 首帧之后异步就绪的启动状态。界面只监听它，不依赖任何未完成的 IO。
 @immutable
 class StartupStatus {
-  const StartupStatus({this.phase = StartupPhase.loading, this.loggedIn = false});
+  const StartupStatus({
+    this.phase = StartupPhase.loading,
+    this.loggedIn = false,
+  });
 
   final StartupPhase phase;
   final bool loggedIn;
 
-  StartupStatus copyWith({StartupPhase? phase, bool? loggedIn}) => StartupStatus(
-    phase: phase ?? this.phase,
-    loggedIn: loggedIn ?? this.loggedIn,
-  );
+  StartupStatus copyWith({StartupPhase? phase, bool? loggedIn}) =>
+      StartupStatus(
+        phase: phase ?? this.phase,
+        loggedIn: loggedIn ?? this.loggedIn,
+      );
 }
 
 /// 启动编排：**只能在 `runApp` 之后调用**。
@@ -137,11 +141,7 @@ class StartupSplash extends StatelessWidget {
                   color: c.fg,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(
-                  Icons.admin_panel_settings,
-                  color: c.bg,
-                  size: 40,
-                ),
+                child: Icon(Icons.admin_panel_settings, color: c.bg, size: 40),
               ),
               const SizedBox(height: 20),
               Text(
@@ -154,10 +154,7 @@ class StartupSplash extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 10),
-              Text(
-                '正在恢复登录状态',
-                style: TextStyle(color: c.muted, fontSize: 12),
-              ),
+              Text('正在恢复登录状态', style: TextStyle(color: c.muted, fontSize: 12)),
             ],
           ),
         ),

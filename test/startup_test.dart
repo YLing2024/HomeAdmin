@@ -19,9 +19,7 @@ void main() {
     AppStartup.resetForTest();
   });
 
-  testWidgets('安全存储抛异常时 main 仍渲染首帧，降级到登录页而非白屏/崩溃', (
-    tester,
-  ) async {
+  testWidgets('安全存储抛异常时 main 仍渲染首帧，降级到登录页而非白屏/崩溃', (tester) async {
     // 测试环境没有 flutter_secure_storage 的平台通道，Auth 读写必然抛
     // MissingPluginException——等价于真机上 KeyStore 异常/挂住。
     app.main();
@@ -35,19 +33,13 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     await tester.pump(const Duration(seconds: 6));
 
-    expect(
-      Auth.storageAvailable.value,
-      isFalse,
-      reason: '安全存储异常应被判定为不可用',
-    );
+    expect(Auth.storageAvailable.value, isFalse, reason: '安全存储异常应被判定为不可用');
     expect(find.byType(LoginPage), findsOneWidget, reason: '应降级到登录页');
     expect(find.byType(HomePage), findsNothing);
     expect(tester.takeException(), isNull, reason: '初始化失败不得抛出到界面');
   });
 
-  testWidgets('初始化失败不阻断登录路径：登录页可交互并明确提示不持久保存', (
-    tester,
-  ) async {
+  testWidgets('初始化失败不阻断登录路径：登录页可交互并明确提示不持久保存', (tester) async {
     Auth.storageAvailable.value = false;
 
     await tester.pumpWidget(
