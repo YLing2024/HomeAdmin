@@ -1,7 +1,7 @@
 name: home_admin
 description: "HomeAdmin - 个人管理后台 App"
 publish_to: 'none'
-version: 1.10.0+2013
+version: 1.10.0+2014
 environment:
   sdk: '>=3.9.0 <4.0.0'
 
