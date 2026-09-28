@@ -477,6 +477,26 @@ class StatusDot extends StatelessWidget {
   }
 }
 
+/// 全局 SnackBar key：跨页面导航后仍能显示提示
+/// （例如登录成功但安全存储不可用、登录态不会持久保存）。
+final GlobalKey<ScaffoldMessengerState> rootScaffoldMessengerKey =
+    GlobalKey<ScaffoldMessengerState>();
+
+/// 无 BuildContext 的全局提示（用 [rootScaffoldMessengerKey] 挂载）。
+void showRootToast(String msg) {
+  final messenger = rootScaffoldMessengerKey.currentState;
+  if (messenger == null) return;
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(msg),
+      duration: const Duration(milliseconds: 4000),
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.only(top: 64, left: 24, right: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+    ),
+  );
+}
+
 /// 全局提示：与 Web toast 一致（顶部居中、ok 色文字）
 void showAppToast(BuildContext context, String msg, {bool ok = true}) {
   final c = context.c;

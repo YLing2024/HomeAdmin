@@ -61,6 +61,10 @@ class _LoginPageState extends State<LoginPage> {
     try {
       await Auth.login();
       if (!mounted) return;
+      // 安全存储不可用时登录只在内存生效：明确告知，不静默假装成功
+      if (!Auth.storageAvailable.value) {
+        showRootToast('本次登录不会持久保存，重启后需重新登录');
+      }
       Navigator.of(
         context,
       ).pushReplacement(MaterialPageRoute(builder: (_) => const HomePage()));
@@ -154,6 +158,20 @@ class _LoginPageState extends State<LoginPage> {
                           style: TextStyle(color: c.danger, fontSize: 12),
                         ),
                       ],
+                      // 安全存储不可用：本次登录只在内存生效，明确告知（不静默）
+                      ValueListenableBuilder<bool>(
+                        valueListenable: Auth.storageAvailable,
+                        builder: (context, available, _) => available
+                            ? const SizedBox.shrink()
+                            : Padding(
+                                padding: const EdgeInsets.only(top: 14),
+                                child: Text(
+                                  '本次登录不会持久保存，重启后需重新登录',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: c.warn, fontSize: 12),
+                                ),
+                              ),
+                      ),
                       const SizedBox(height: 16),
                       const Row(
                         mainAxisAlignment: MainAxisAlignment.center,

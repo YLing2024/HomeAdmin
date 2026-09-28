@@ -1,23 +1,26 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
 import 'auth.dart';
-import 'home_page.dart';
 import 'login_page.dart';
 import 'notification_service.dart';
+import 'startup.dart';
 import 'theme.dart';
 
-Future<void> main() async {
+void main() {
+  // 首帧路径只允许同步调用：确保绑定就绪（无 IO、不会挂）。
   WidgetsFlutterBinding.ensureInitialized();
-  await Auth.init();
-  // access_token 可能已过期但 refresh_token 仍有效：启动时先静默续期一次
-  final loggedIn = await Auth.ensureValidAccessToken();
-  await ThemePrefs.load();
+
+  // 同步装配回调（纯赋值，不阻塞首帧）。
   Api.onAuthRequired = forceLogout;
-  // 前台服务 isolate 若发现 401，统一上报主 isolate 续期/登出（见下）
   onNotificationAuthRequired = handleNotificationAuthRequired;
-  await NotificationService.init();
-  runApp(AdminApp(loggedIn: loggedIn));
+
+  // 先把界面画出来：安全存储 / 令牌 / 主题 / 通知服务全部移到 runApp 之后
+  // 异步进行（各步自带超时与降级，见 startup.dart），任何一步失败都不白屏。
+  runApp(const AdminApp());
+  unawaited(AppStartup.run());
 }
 
 /// 通知服务 isolate 上报 401：主 isolate 是**唯一**续期方（refresh_token 一次性，
@@ -34,9 +37,7 @@ Future<void> handleNotificationAuthRequired() async {
 }
 
 class AdminApp extends StatelessWidget {
-  const AdminApp({super.key, required this.loggedIn});
-
-  final bool loggedIn;
+  const AdminApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -47,8 +48,10 @@ class AdminApp extends StatelessWidget {
           title: 'Admin',
           debugShowCheckedModeBanner: false,
           navigatorKey: rootNavigatorKey,
+          scaffoldMessengerKey: rootScaffoldMessengerKey,
           theme: buildTheme(brightness),
-          home: loggedIn ? const HomePage() : const LoginPage(),
+          // 登录态异步就绪后再切换登录页 / 主页
+          home: const StartupGate(),
         );
       },
     );
