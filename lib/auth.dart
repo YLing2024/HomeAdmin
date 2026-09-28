@@ -19,6 +19,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
@@ -56,6 +57,12 @@ const Duration _kRevokeTimeout = Duration(seconds: 5);
 
 /// PKCE 登录等待回调的总超时。
 const Duration _kLoginTimeout = Duration(minutes: 5);
+
+/// 安全存储读写超时：超过即视为不可用。
+///
+/// 某些设备上 KeyStore 异常会让 method channel 永久不返回（表现为启动挂住、
+/// 连 `shared_prefs` 都不落盘），所以读写都必须有上限，超时按「不可用」降级。
+const Duration kStorageTimeout = Duration(seconds: 5);
 
 class AuthException implements Exception {
   const AuthException(this.message);
@@ -104,6 +111,19 @@ class Auth {
   static AuthTokens? _tokens;
   static Future<bool>? _refreshing;
 
+  /// 安全存储是否可用（读取/写入超时或抛错即置 false）。
+  ///
+  /// 不可用时仍保留**内存态**：本次会话可以正常登录与调用 API，只是**不会
+  /// 持久保存**，UI 据此明确告知用户，不静默假装成功。
+  static final ValueNotifier<bool> storageAvailable = ValueNotifier<bool>(true);
+
+  static void _markStorageUnavailable(Object e) {
+    if (storageAvailable.value) {
+      debugPrint('安全存储不可用，本次会话改用内存态（不持久保存）: $e');
+    }
+    storageAvailable.value = false;
+  }
+
   /// 当前 access_token（内存缓存，空串表示无）。
   static String get accessToken => _tokens?.accessToken ?? '';
 
@@ -128,15 +148,19 @@ class Auth {
     return t != null && t.accessToken.isNotEmpty;
   }
 
-  /// 清空内存与安全存储中的令牌。
+  /// 清空内存与安全存储中的令牌（安全存储失败不抛出：内存已清即已登出）。
   static Future<void> clear() async {
     _tokens = null;
-    await Future.wait([
-      _storage.delete(key: _kAccess),
-      _storage.delete(key: _kRefresh),
-      _storage.delete(key: _kId),
-      _storage.delete(key: _kExpiry),
-    ]);
+    try {
+      await Future.wait([
+        _storage.delete(key: _kAccess),
+        _storage.delete(key: _kRefresh),
+        _storage.delete(key: _kId),
+        _storage.delete(key: _kExpiry),
+      ]).timeout(kStorageTimeout);
+    } catch (e) {
+      _markStorageUnavailable(e);
+    }
   }
 
   /* ============ 登录（PKCE） ============ */
@@ -332,28 +356,43 @@ class Auth {
 
   static Future<AuthTokens?> _read() async {
     try {
-      final access = await _storage.read(key: _kAccess) ?? '';
-      final refresh = await _storage.read(key: _kRefresh);
-      if (access.isEmpty && (refresh == null || refresh.isEmpty)) return null;
-      final id = await _storage.read(key: _kId);
-      final expRaw = await _storage.read(key: _kExpiry);
-      final expMs = expRaw == null ? null : int.tryParse(expRaw);
-      return AuthTokens(
-        accessToken: access,
-        refreshToken: refresh,
-        idToken: id,
-        expiresAt: expMs == null
-            ? null
-            : DateTime.fromMillisecondsSinceEpoch(expMs),
-      );
-    } catch (_) {
-      // 安全存储不可用（如 KeyStore 异常）时按未登录处理，不抛给调用方
+      return await _readFromStorage().timeout(kStorageTimeout);
+    } catch (e) {
+      // 安全存储不可用（如 KeyStore 异常、超时）时按未登录处理，不抛给调用方
+      _markStorageUnavailable(e);
       return null;
     }
   }
 
+  static Future<AuthTokens?> _readFromStorage() async {
+    final access = await _storage.read(key: _kAccess) ?? '';
+    final refresh = await _storage.read(key: _kRefresh);
+    if (access.isEmpty && (refresh == null || refresh.isEmpty)) return null;
+    final id = await _storage.read(key: _kId);
+    final expRaw = await _storage.read(key: _kExpiry);
+    final expMs = expRaw == null ? null : int.tryParse(expRaw);
+    return AuthTokens(
+      accessToken: access,
+      refreshToken: refresh,
+      idToken: id,
+      expiresAt: expMs == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(expMs),
+    );
+  }
+
+  /// 先落内存，再尽力写安全存储：写入失败/超时只标记「不持久保存」，不抛出，
+  /// 保证本次会话（登录、API）仍可用。
   static Future<void> _persist(AuthTokens t) async {
     _tokens = t;
+    try {
+      await _writeToStorage(t).timeout(kStorageTimeout);
+    } catch (e) {
+      _markStorageUnavailable(e);
+    }
+  }
+
+  static Future<void> _writeToStorage(AuthTokens t) async {
     await _storage.write(key: _kAccess, value: t.accessToken);
     final exp = t.expiresAt;
     if (exp == null) {
