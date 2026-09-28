@@ -8,7 +8,7 @@
 
 | 页面 | 文件 | 说明 |
 |---|---|---|
-| 登录 | `login_page.dart` | TOTP 动态码登录（走认证中心） |
+| 登录 | `login_page.dart` | 系统浏览器走标准 OAuth2 PKCE 登录（回环回调），不再输入 TOTP |
 | 主页 | `home_page.dart` | 入口导航 |
 | 聊天 | `chat_page.dart` | 与 Hermes 网关对话（流式） |
 | 浏览 | `browse_page.dart` / `blog_page.dart` | 历史会话、博客 |
@@ -20,23 +20,25 @@
 ## 技术栈
 
 - Flutter（Dart SDK `>=3.9.0 <4.0.0`），Material
-- 依赖：`http`、`shared_preferences`（token 持久化）、`webview_flutter`（终端 Tab）、`image_picker`、`file_picker`、`path_provider`、`flutter_markdown`、`markdown`、`qr_flutter`、`url_launcher`
+- 依赖：`http`、`flutter_secure_storage`（OAuth2 令牌存系统安全存储）、`crypto`（PKCE 的 S256）、`webview_flutter`（终端 / Hermes Tab）、`image_picker`、`file_picker`、`path_provider`、`flutter_markdown`、`markdown`、`qr_flutter`、`url_launcher`、`shared_preferences`（仅存主题/草稿/终端标签等非敏感 UI 状态，**不再存 token**）
 - lint：`flutter_lints`
-- 测试：`test/media_parsers_test.dart`（纯函数单测）
+- 测试：`flutter test`（PKCE 纯逻辑、媒体解析、通知模型/页面、Hermes 抽屉等）
 
 ## 目录结构
 
 ```
 lib/
-├── main.dart              # 入口 + 主题装配
-├── api.dart               # REST 封装（token 存取、统一请求、401 登出）
+├── main.dart              # 入口（加载安全存储令牌）+ 主题装配
+├── api.dart               # REST 封装（统一 Bearer、401 refresh 重试、全局登出回调）
+├── auth.dart              # OAuth2 PKCE 登录/续期/登出 + 系统安全存储
+├── pkce.dart              # PKCE 纯逻辑（verifier/challenge/state，可单测）
 ├── theme.dart             # 主题（与主页 v2 Swiss 调色板对齐）
-├── login_page.dart        # TOTP 登录页 + 全局 forceLogout()
+├── login_page.dart        # PKCE 登录入口页 + 全局 forceLogout()
 ├── home_page.dart / chat_page.dart / browse_page.dart
 ├── system_page.dart / version_page.dart / manage_page.dart / reset_totp_page.dart
 ├── command_palette.dart
 └── media_tags.dart / file_refs.dart / image_refs.dart   # 消息引用解析（与 admin-web 同语义）
-test/media_parsers_test.dart
+test/pkce_test.dart        # PKCE 纯函数单测（含 RFC 7636 测试向量）
 android/                   # 标准 Flutter Android 工程
 ```
 
@@ -69,31 +71,40 @@ flutter build apk --release       # 产物 build/app/outputs/flutter-apk/app-rel
 
 文案：唯美克制，**禁 emoji / 鸡汤 / 网络热词**。
 
-## ✅ 已修复：私有地址改为编译期注入
+## 鉴权：标准 OAuth2 PKCE（2026-09-28 起）
 
-`lib/api.dart` 顶部原硬编码的私有基础设施地址已改为编译期注入：
+App 是**原生客户端**，与系统浏览器的 cookie store 不共享，所以不能走网关的网页会话 cookie；
+统一改走标准 OAuth2.1 / OIDC PKCE（公开客户端，**无 client_secret**）：
+
+- 登录：`lib/auth.dart` 生成 `code_verifier`/`code_challenge(S256)`/`state`（`lib/pkce.dart`）→
+  `url_launcher` 打开系统浏览器 `/authorize` → App 内起一个**只监听 `127.0.0.1:53682`** 的临时
+  HTTP server 收 `?code=&state=`，**校验 state** 后换令牌并关掉 server。
+- 令牌：`access_token`（约 1h）/ `refresh_token`（约 30d）/ `id_token` 存 **系统安全存储**
+  （`flutter_secure_storage`：Android Keystore / iOS Keychain），源码与 `shared_preferences` 均**不落 token**。
+- 每个业务请求：`lib/api.dart` 统一加 `Authorization: Bearer <access_token>`；401 时用
+  `grant_type=refresh_token` 静默续期并**原样重试一次**，续期失败才 `forceLogout()`（不回退旧 `/api/admin/login`）。
+- 登出：先清安全存储，再 best-effort 调 `/revoke`（body 带 `token` + `client_id`）。
+- **刷新纪律**：认证中心的 refresh_token 一次性（重放会作废整条链），所以**只允许主 isolate 续期**；
+  前台服务 isolate 遇 401 只上报，由 `main.dart` 的主 isolate 续期后重启服务。
+
+**为什么不能用自定义 scheme**：认证中心只接受 `https` 或 `localhost` 的 redirect_uri，自定义 scheme
+（`homeadmin://callback`）未注册也不被接受。
+
+**为什么回调端口固定 53682**：redirect_uri 必须与客户端注册值**精确匹配**（不许通配），所以
+`redirect_uri` 与本地监听端口都写死为 `http://127.0.0.1:53682/callback`。
+
+## ✅ 私有地址一律编译期注入
+
+`lib/api.dart`（API_BASE）、`lib/auth.dart`（AUTH_BASE / OAUTH_CLIENT_ID）、
+`lib/hermes_page.dart`（HERMES_URL）里的私有地址均改为编译期注入，仓库内只有占位域：
 
 ```dart
-const String kApiBase = String.fromEnvironment(
-  'API_BASE',
-  defaultValue: 'https://api.example.com',
-);
-const String kAuthBase = String.fromEnvironment(
-  'AUTH_BASE',
-  defaultValue: 'https://auth.example.com',
-);
+const String kApiBase = String.fromEnvironment('API_BASE', defaultValue: 'https://api.example.com');
+const String kAuthBase = String.fromEnvironment('AUTH_BASE', defaultValue: 'https://auth.example.com');
+const String kOAuthClientId = String.fromEnvironment('OAUTH_CLIENT_ID', defaultValue: 'home-admin');
 ```
 
-Hermes 控制台（`lib/hermes_page.dart`）同样是编译期注入：
-
-```dart
-const String kHermesUrl = String.fromEnvironment(
-  'HERMES_URL',
-  defaultValue: 'https://hermes.example.com',
-);
-```
-
-**构建必须带三个 `--dart-define`**，否则会回退到占位域、连不上后端 / 打不开 Hermes：
+**构建必须带三个 `--dart-define`**，否则会回退到占位域、连不上后端 / 打不开认证中心：
 
 ```bash
 flutter build apk --release \
@@ -102,14 +113,18 @@ flutter build apk --release \
   --dart-define=HERMES_URL=<Hermes 控制台域名，含 https://>
 ```
 
+`OAUTH_CLIENT_ID` 默认已是注册值 `home-admin`，一般无需覆盖。
+
 规则不变：私有地址必须环境注入、不得入库；不要在新代码里继续加硬编码地址。
 
 ## 已知坑
 
 - **终端 Tab 与 Web 端必须行为一致**（`terminal_page.dart` ↔ `admin-web/src/components/Terminal.jsx`）：会话名 + 12h 票据按 `--url-arg` 顺序传给 wrapper（第 1 个 = 会话名、第 2 个 = 票据）；存活点 6s 轮询且**只在 Tab 激活时轮询**；票据只在内存保存（App 重启即失效）；关标签结束对应会话，锁定则批量结束。改一边就要同步另一边。
 - 与后端协议对齐 `admin-web`：`@file:` / `@image:` / MEDIA 标签的解析语义必须两边一致（改了 `media_tags.dart` 要同步 `admin-web/src/mediaTags.js`）。
-- token 存 `shared_preferences`，401 时走 `forceLogout()`（幂等，可重复触发）。
-- `README.md` 是 `flutter create` 生成的模板原文，不要当作项目说明。
+- token 存**系统安全存储**（`flutter_secure_storage`），401 且续期失败时走 `forceLogout()`（幂等，可重复触发）；`shared_preferences` 只放主题/草稿/终端标签等非敏感 UI 状态。
+- 终端 WebView 首帧用 `Api.webviewHeaders()` 带 `Authorization: Bearer`（不再把 token 拼进 URL）；`ttyd` 子资源同源加载。
+- 文件下载走系统浏览器（网关会话 cookie 鉴权，URL 不带 token）；App 内带 Bearer 取字节用 `Api.download()`。
+- `README.md` 已改写为项目说明（构建 + PKCE 流程），不再是 `flutter create` 模板原文。
 - 仓库里没有 iOS 工程，目标平台只有 Android。
 
 ## 项目记忆（PROJECT_MEMORY.md）
