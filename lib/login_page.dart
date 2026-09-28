@@ -178,9 +178,13 @@ class _LoginPageState extends State<LoginPage> {
                         children: [
                           Icon(Icons.lock_outline, size: 14, color: kMutedHint),
                           SizedBox(width: 6),
-                          Text(
-                            '标准 OAuth2 PKCE · 登录态存系统安全存储',
-                            style: TextStyle(color: kMutedHint, fontSize: 12),
+                          Flexible(
+                            child: Text(
+                              '标准 OAuth2 PKCE · 登录态存系统安全存储',
+                              style: TextStyle(color: kMutedHint, fontSize: 12),
+                              overflow: TextOverflow.ellipsis,
+                              softWrap: false,
+                            ),
                           ),
                         ],
                       ),
