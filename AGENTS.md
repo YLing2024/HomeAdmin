@@ -81,7 +81,7 @@ App 是**原生客户端**，与系统浏览器的 cookie store 不共享，所�
 - 登录：`lib/auth.dart` 生成 `code_verifier`/`code_challenge(S256)`/`state`（`lib/pkce.dart`）→
   `url_launcher` 打开系统浏览器 `/authorize` → App 内起一个**只监听 `127.0.0.1:53682`** 的临时
   HTTP server 收 `?code=&state=`，**校验 state** 后换令牌并关掉 server。
-- 令牌：`access_token`（约 1h）/ `refresh_token`（约 30d）/ `id_token` 存 **系统安全存储**
+- 令牌：`access_token`（默认 15 分钟）/ `refresh_token`（约 30d）/ `id_token` 存 **系统安全存储**
   （`flutter_secure_storage`：Android Keystore / iOS Keychain），源码与 `shared_preferences` 均**不落 token**。
 - 每个业务请求：`lib/api.dart` 统一加 `Authorization: Bearer <access_token>`；401 时用
   `grant_type=refresh_token` 静默续期并**原样重试一次**，续期失败才 `forceLogout()`（不回退旧 `/api/admin/login`）。
