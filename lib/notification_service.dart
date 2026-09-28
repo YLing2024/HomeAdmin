@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:ui' show DartPluginRegistrant;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -8,6 +9,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 
 import 'api.dart';
+import 'auth.dart';
 import 'notification_model.dart';
 import 'notification_store.dart';
 
@@ -23,7 +25,8 @@ const String kLocalChannelDescription = '收到新通知时提醒';
 /// SSE 连接：建立/读取超时；无数据传输由心跳超时兜底
 const Duration _kConnectTimeout = Duration(seconds: 20);
 
-/// 服务 isolate 因 401 失效时回调（main 注入 `forceLogout`，避免与 login_page 循环依赖）
+/// 服务 isolate 因 401 失效时回调（main 注入；主 isolate 负责续期后重启服务，
+/// 避免与服务 isolate 同时 refresh 触发认证中心的 refresh 重放保护）
 void Function()? onNotificationAuthRequired;
 
 /// 点开本地通知时跳转通知页（HomePage 注入，切换抽屉 Tab）
@@ -32,6 +35,9 @@ void Function()? onOpenNotifications;
 /// 前台服务 isolate 入口（必须是顶层函数 + entry-point 标注）
 @pragma('vm:entry-point')
 void notificationServiceCallback() {
+  // 后台 isolate 单独注册插件，保证 flutter_secure_storage / shared_preferences
+  // 等 method channel 在该 isolate 内可用。
+  DartPluginRegistrant.ensureInitialized();
   FlutterForegroundTask.setTaskHandler(NotificationTaskHandler());
 }
 
@@ -104,7 +110,7 @@ class NotificationService {
   /// 已登录则确保服务在运行；返回当前是否运行。
   static Future<bool> ensureStarted() async {
     if (!_android || !_initialized) return false;
-    if (Api.token.isEmpty) return false;
+    if (!Auth.hasSession) return false;
     if (await FlutterForegroundTask.isRunningService) {
       NotificationStore.running.value = true;
       return true;
@@ -206,7 +212,9 @@ class NotificationTaskHandler extends TaskHandler {
         0;
     await _ensureLocalNotifications();
 
-    final token = await Api.readPersistedToken();
+    // 本 isolate 独立从系统安全存储恢复 token（与主 isolate 不共享内存状态）
+    await Auth.init();
+    final token = Auth.accessToken;
     FlutterForegroundTask.sendDataToMain({
       'type': 'service_started',
       'unread': _unread,

@@ -342,7 +342,12 @@ class _TerminalPageState extends State<TerminalPage> {
           },
         ),
       )
-      ..loadRequest(Uri.parse(Api.termUrl(t.id, _ticket)));
+      // 鉴权走网关 Bearer：WebView 首帧请求头带 Authorization（不再用 URL token，
+      // 避免令牌落进 URL / 历史记录）。子资源由 ttyd 同源加载，依赖前端会话态。
+      ..loadRequest(
+        Uri.parse(Api.termUrl(t.id, _ticket)),
+        headers: Api.webviewHeaders(),
+      );
     _webviews[t.id] = controller;
     _builtTicket[t.id] = _ticket;
     _builtNonce[t.id] = _nonce;

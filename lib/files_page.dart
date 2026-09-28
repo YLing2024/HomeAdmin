@@ -335,6 +335,8 @@ class _FilesPageState extends State<FilesPage> {
 
   Future<void> _download(_Entry e) async {
     try {
+      // 系统浏览器打开下载地址：鉴权走浏览器侧的网关会话 cookie（对齐 Web），
+      // 不把 App 的 Bearer 拼进 URL。App 内带 Bearer 取字节用 Api.download()。
       final ok = await launchUrl(
         Uri.parse(Api.fileDownloadUrl(_targetOf(e))),
         mode: LaunchMode.externalApplication,

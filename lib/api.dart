@@ -4,23 +4,17 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
+import 'auth.dart';
 import 'notification_model.dart';
 
 // 构建时必须带 --dart-define 注入真实地址，否则将回退到占位域、连不上后端：
 //   flutter build apk --release --dart-define=API_BASE=... --dart-define=AUTH_BASE=...
 
-/// 管理后台 API 基址（nginx 入口，Bearer token 由 auth_request 探针校验）
+/// 管理后台 API 基址（网关注入 X-Auth-User；客户端统一带 Authorization: Bearer）。
 const String kApiBase = String.fromEnvironment(
   'API_BASE',
   defaultValue: 'https://api.example.com',
-);
-
-/// 认证中心 API 基址（登录校验 TOTP 动态码并签发会话 token）
-const String kAuthBase = String.fromEnvironment(
-  'AUTH_BASE',
-  defaultValue: 'https://auth.example.com',
 );
 
 class ApiException implements Exception {
@@ -69,53 +63,29 @@ class ApiCallResult {
   }
 }
 
-/// REST API 封装：认证中心 token 登录 / 系统监控 / 上传下载 / TOTP 重置 / 博客管理
+/// REST API 封装：系统监控 / 上传下载 / TOTP 重置 / 博客管理 / 通知。
+///
+/// 鉴权：登录态由 [Auth]（PKCE + 系统安全存储）持有，这里统一在
+/// [_headers] 注入 `Authorization: Bearer`；[_authed] 在 401 时用
+/// refresh_token 静默续期并重试一次，续期失败才触发全局登出。
 class Api {
   Api._();
 
-  static const _tokenKey = 'auth_token';
-  static String _token = '';
+  /// 业务请求头：JSON 内容类型 + Bearer（无登录态时不带 Authorization）。
+  static Map<String, String> _headers({bool json = true}) => {
+    if (json) 'Content-Type': 'application/json',
+    if (Auth.accessToken.isNotEmpty) 'Authorization': 'Bearer ${Auth.accessToken}',
+  };
 
-  static String get token => _token;
-
-  static void setToken(String value) => _token = value;
-
-  /// 启动时从本地恢复 token
-  static Future<void> restoreToken() async {
-    final sp = await SharedPreferences.getInstance();
-    _token = sp.getString(_tokenKey) ?? '';
-  }
-
-  /// 清除 token 并持久化移除
-  static Future<void> logout() async {
-    _token = '';
-    final sp = await SharedPreferences.getInstance();
-    await sp.remove(_tokenKey);
-  }
-
-  /// 持久化保存 token
-  static Future<void> saveToken(String value) async {
-    _token = value;
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(_tokenKey, value);
-  }
-
-  /// 读取本地持久化的 token（供前台服务 isolate 读取，复用同一存储键，
-  /// 不另写一套鉴权；登录态变化仍由 saveToken / logout 维护）。
-  static Future<String> readPersistedToken() async {
-    final sp = await SharedPreferences.getInstance();
-    return sp.getString(_tokenKey) ?? '';
-  }
+  /// WebView 首帧请求头（终端等无法用 http 包直达的场景）。
+  static Map<String, String> webviewHeaders() => {
+    if (Auth.accessToken.isNotEmpty) 'Authorization': 'Bearer ${Auth.accessToken}',
+  };
 
   static Uri _uri(String base, String path, [Map<String, String>? query]) =>
       Uri.parse('$base$path').replace(queryParameters: query);
 
-  static Map<String, String> _headers({bool json = true}) => {
-    if (json) 'Content-Type': 'application/json',
-    if (_token.isNotEmpty) 'Authorization': 'Bearer $_token',
-  };
-
-  /// 鉴权失效回调（401），由 main 注册为全局登出
+  /// 鉴权失效回调（401 且续期失败），由 main 注册为全局登出
   static Future<void> Function()? onAuthRequired;
 
   static void _notifyAuthRequired() {
@@ -123,85 +93,79 @@ class Api {
     if (cb != null) unawaited(cb());
   }
 
-  /* ============ 登录（认证中心） ============ */
+  /* ============ 统一鉴权请求 ============ */
 
-  /// POST /api/login {code, deviceName} -> {token, expiresIn}
-  /// 失败可能返回错误码：invalid_code / rate_limited(带 retryAfter) / totp_setup_required
-  static Future<String> login(String code) async {
-    final res = await http.post(
-      _uri(kAuthBase, '/api/login'),
-      headers: _headers(),
-      body: jsonEncode({'code': code, 'deviceName': _deviceName()}),
-    );
-    final data = _decode(res);
-    final t = data['token'];
-    if (t is! String || t.isEmpty) {
-      throw ApiException('登录失败：未返回 token');
+  /// 自动带 Bearer；401 时先用 refresh_token 续期，再原样重试一次；
+  /// 仍 401 则触发全局登出（不回退到旧的 /api/admin/login）。
+  static Future<http.Response> _authed(
+    Future<http.Response> Function(Map<String, String> headers) send,
+  ) async {
+    var res = await send(_headers());
+    if (res.statusCode == 401 && await Auth.refresh()) {
+      res = await send(_headers());
     }
-    return t;
+    if (res.statusCode == 401) _notifyAuthRequired();
+    return res;
   }
 
-  /// POST /api/totp/setup -> { secret, otpauthUri }
-  /// 认证中心首次 TOTP 绑定（仅未配置时可用；已配置返回 409）
-  static Future<Map<String, dynamic>> totpSetup() async {
-    final res = await http.post(
-      _uri(kAuthBase, '/api/totp/setup'),
-      headers: _headers(),
-    );
-    return _decode(res);
-  }
+  static Future<http.Response> _get(Uri uri) =>
+      _authed((h) => http.get(uri, headers: h));
 
-  /// 设备名推导（对齐 Web deviceName()：应用名 · 系统，供设备会话管理展示）
-  static String _deviceName() {
-    try {
-      final sys = Platform.operatingSystem;
-      String label;
-      switch (sys) {
-        case 'android':
-          label = 'Android';
-        case 'ios':
-          label = 'iOS';
-        case 'windows':
-          label = 'Windows';
-        case 'macos':
-          label = 'macOS';
-        case 'linux':
-          label = 'Linux';
-        default:
-          label = sys;
-      }
-      return 'HomeAdmin · $label';
-    } catch (_) {
-      return 'HomeAdmin';
+  static Future<http.Response> _post(Uri uri, {Object? body}) =>
+      _authed((h) => http.post(uri, headers: h, body: body));
+
+  static Future<http.Response> _put(Uri uri, {Object? body}) =>
+      _authed((h) => http.put(uri, headers: h, body: body));
+
+  static Future<http.Response> _patch(Uri uri, {Object? body}) =>
+      _authed((h) => http.patch(uri, headers: h, body: body));
+
+  static Future<http.Response> _delete(Uri uri) =>
+      _authed((h) => http.delete(uri, headers: h));
+
+  /// multipart 请求同样走鉴权与 401 续期重试；[build] 需可重复调用以重建文件流。
+  static Future<http.Response> _sendMultipart(
+    Future<http.MultipartRequest> Function(Map<String, String> headers) build, {
+    Duration? timeout,
+  }) async {
+    Future<http.Response> send() async {
+      final req = await build(_headers(json: false));
+      var streamed = req.send();
+      if (timeout != null) streamed = streamed.timeout(timeout);
+      return http.Response.fromStream(await streamed);
     }
+
+    var res = await send();
+    if (res.statusCode == 401 && await Auth.refresh()) {
+      res = await send();
+    }
+    if (res.statusCode == 401) _notifyAuthRequired();
+    return res;
   }
 
   /* ============ 系统监控 ============ */
 
   /// GET /api/admin/system
   static Future<Map<String, dynamic>> system() async {
-    final res = await http.get(_uri(kApiBase, '/api/admin/system'), headers: _headers());
+    final res = await _get(_uri(kApiBase, '/api/admin/system'));
     return _decode(res);
   }
 
   /// GET /api/admin/system/history -> 采样点数组（服务端直接返回 JSON 数组）
   static Future<List<dynamic>> systemHistory() async {
-    final res = await http.get(
-      _uri(kApiBase, '/api/admin/system/history'),
-      headers: _headers(),
-    );
+    final res = await _get(_uri(kApiBase, '/api/admin/system/history'));
     return _decodeList(res);
   }
 
   /// GET /api/admin/services -> { services, processes }
   static Future<Map<String, dynamic>> services() async {
-    final res = await http.get(_uri(kApiBase, '/api/admin/services'), headers: _headers());
+    final res = await _get(_uri(kApiBase, '/api/admin/services'));
     return _decode(res);
   }
 
   /// GET /api/admin/versions -> { list }
   static Future<List<dynamic>> versions() async {
-    final res = await http.get(_uri(kApiBase, '/api/admin/versions'), headers: _headers());
+    final res = await _get(_uri(kApiBase, '/api/admin/versions'));
     final data = _decode(res);
     final list = data['list'];
     return list is List ? list : [];
@@ -211,15 +175,14 @@ class Api {
 
   /// GET /api/admin/history -> { sessions: [{ id, title, time, message_count }] }
   static Future<Map<String, dynamic>> historySessions() async {
-    final res = await http.get(_uri(kApiBase, '/api/admin/history'), headers: _headers());
+    final res = await _get(_uri(kApiBase, '/api/admin/history'));
     return _decode(res);
   }
 
   /// GET /api/admin/history/{id} -> { session: { id, title }, messages: [{ role, content, ts }] }
   static Future<Map<String, dynamic>> historyMessages(String id) async {
-    final res = await http.get(
+    final res = await _get(
       _uri(kApiBase, '/api/admin/history/${Uri.encodeComponent(id)}'),
-      headers: _headers(),
     );
     return _decode(res);
   }
@@ -229,7 +192,7 @@ class Api {
   /// GET /api/admin/sessions -> { sessions: [{ id, deviceName, ip, isLocal,
   ///   location, userAgent, createdAt, lastSeenAt, expiresAt(秒), isCurrent }] }
   static Future<List<Map<String, dynamic>>> sessions() async {
-    final res = await http.get(_uri(kApiBase, '/api/admin/sessions'), headers: _headers());
+    final res = await _get(_uri(kApiBase, '/api/admin/sessions'));
     final data = _decode(res);
     final list = data['sessions'];
     return (list is List)
@@ -239,9 +202,8 @@ class Api {
 
   /// PUT /api/admin/sessions/{id}/name { deviceName }
   static Future<void> sessionRename(String id, String deviceName) async {
-    final res = await http.put(
+    final res = await _put(
       _uri(kApiBase, '/api/admin/sessions/${Uri.encodeComponent(id)}/name'),
-      headers: _headers(),
       body: jsonEncode({'deviceName': deviceName}),
     );
     _decode(res);
@@ -249,9 +211,8 @@ class Api {
 
   /// DELETE /api/admin/sessions/{id}
   static Future<void> sessionDelete(String id) async {
-    final res = await http.delete(
+    final res = await _delete(
       _uri(kApiBase, '/api/admin/sessions/${Uri.encodeComponent(id)}'),
-      headers: _headers(),
     );
     _decode(res);
   }
@@ -261,7 +222,7 @@ class Api {
   /// GET /api/admin/api-tokens -> { tokens: [{ id, name, note, createdAt,
   ///   expiresAt, lastUsedAt }] }（绝不含 token 明文）
   static Future<List<Map<String, dynamic>>> apiTokens() async {
-    final res = await http.get(_uri(kApiBase, '/api/admin/api-tokens'), headers: _headers());
+    final res = await _get(_uri(kApiBase, '/api/admin/api-tokens'));
     final data = _decode(res);
     final list = data['tokens'];
     return (list is List)
@@ -276,9 +237,8 @@ class Api {
     String note = '',
     required int expiresInDays,
   }) async {
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/admin/api-tokens'),
-      headers: _headers(),
       body: jsonEncode({'name': name, 'note': note, 'expiresInDays': expiresInDays}),
     );
     return _decode(res);
@@ -286,9 +246,8 @@ class Api {
 
   /// PATCH /api/admin/api-tokens/{id}，可选 { name, note, expiresInDays }
   static Future<void> apiTokenUpdate(String id, Map<String, dynamic> patch) async {
-    final res = await http.patch(
+    final res = await _patch(
       _uri(kApiBase, '/api/admin/api-tokens/${Uri.encodeComponent(id)}'),
-      headers: _headers(),
       body: jsonEncode(patch),
     );
     _decode(res);
@@ -296,9 +255,8 @@ class Api {
 
   /// DELETE /api/admin/api-tokens/{id}（吊销，立即失效）
   static Future<void> apiTokenDelete(String id) async {
-    final res = await http.delete(
+    final res = await _delete(
       _uri(kApiBase, '/api/admin/api-tokens/${Uri.encodeComponent(id)}'),
-      headers: _headers(),
     );
     _decode(res);
   }
@@ -309,6 +267,7 @@ class Api {
   /// 注意：口令错误时服务端返回 401，这里不能走 _decode 的「登录过期」回调，
   /// 否则输错口令会被全局登出；429 时 ApiException.retryAfter 为锁定剩余秒数。
   static Future<Map<String, dynamic>> termUnlock(String password) async {
+    // 口令错误与登录过期同为 401：这里不走 _authed 的续期/登出，避免误登出。
     final res = await http.post(
       _uri(kApiBase, '/api/admin/term/unlock'),
       headers: _headers(),
@@ -335,10 +294,7 @@ class Api {
 
   /// GET /api/admin/term/sessions -> { sessions: [{ name, attached, activity }] }
   static Future<List<Map<String, dynamic>>> termSessions() async {
-    final res = await http.get(
-      _uri(kApiBase, '/api/admin/term/sessions'),
-      headers: _headers(),
-    );
+    final res = await _get(_uri(kApiBase, '/api/admin/term/sessions'));
     final data = _decode(res);
     final list = data['sessions'];
     return (list is List)
@@ -348,28 +304,26 @@ class Api {
 
   /// DELETE /api/admin/term/sessions/{name}（关闭单个会话，关标签时调用）
   static Future<void> termCloseSession(String name) async {
-    final res = await http.delete(
+    final res = await _delete(
       _uri(kApiBase, '/api/admin/term/sessions/${Uri.encodeComponent(name)}'),
-      headers: _headers(),
     );
     _decode(res);
   }
 
   /// POST /api/admin/term/sessions/close { names }（批量关闭，锁定/离开时调用）
   static Future<void> termCloseSessions(List<String> names) async {
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/admin/term/sessions/close'),
-      headers: _headers(),
       body: jsonEncode({'names': names}),
     );
     _decode(res);
   }
 
-  /// 终端 WebView 地址：token 供探针鉴权；两个 arg 按 ttyd --url-arg 顺序
-  /// 传给服务端 wrapper（$1=会话名，$2=票据）
+  /// 终端 WebView 地址：两个 arg 按 ttyd --url-arg 顺序传给服务端 wrapper
+  /// （$1=会话名，$2=票据）。鉴权不再走 URL token，改由 WebView 首帧带
+  /// [webviewHeaders] 的 Authorization: Bearer（网关校验）。
   static String termUrl(String name, String ticket) =>
       Uri.parse('$kApiBase/term/').replace(queryParameters: {
-        'token': _token,
         'arg': [name, ticket],
       }).toString();
 
@@ -377,13 +331,17 @@ class Api {
 
   /// POST /api/admin/upload（multipart 字段名 file）-> {path}
   static Future<String> upload(File file, String filename) async {
-    final req = http.MultipartRequest('POST', _uri(kApiBase, '/api/admin/upload'));
-    req.headers['Authorization'] = 'Bearer $_token';
-    req.files.add(
-      await http.MultipartFile.fromPath('file', file.path, filename: filename),
+    final res = await _sendMultipart(
+      (headers) async => http.MultipartRequest(
+        'POST',
+        _uri(kApiBase, '/api/admin/upload'),
+      )
+        ..headers.addAll(headers)
+        ..files.add(
+          await http.MultipartFile.fromPath('file', file.path, filename: filename),
+        ),
+      timeout: const Duration(seconds: 120),
     );
-    final streamed = await req.send().timeout(const Duration(seconds: 120));
-    final res = await http.Response.fromStream(streamed);
     final data = _decode(res);
     final p = data['path'];
     if (p is! String || p.isEmpty) {
@@ -392,22 +350,20 @@ class Api {
     return p;
   }
 
-  /// GET /api/admin/download?path= -> 文件字节
+  /// GET /api/admin/download?path= -> 文件字节（App 内带 Bearer 取回）
   static Future<Uint8List> download(String path) async {
-    final res = await http.get(
-      _uri(kApiBase, '/api/admin/download', {'path': path}),
-      headers: _headers(),
-    );
+    final res = await _get(_uri(kApiBase, '/api/admin/download', {'path': path}));
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      if (res.statusCode == 401) _notifyAuthRequired();
       throw ApiException(_errorOf(res), code: res.statusCode);
     }
     return res.bodyBytes;
   }
 
-  /// 图片/附件的直接下载 URL（带 token 查询参数，供 Image.network 使用）
-  static String downloadUrl(String path) =>
-      _uri(kApiBase, '/api/admin/download', {'path': path, 'token': _token}).toString();
+  /// 文件下载 URL：交给**系统浏览器**打开（鉴权由浏览器携带的网关会话 cookie 完成）。
+  /// 不再把 App 的 Bearer 拼进 URL，令牌不落 URL / 浏览器历史。
+  /// App 内需要带 Bearer 直接取字节时用 [download]。
+  static String fileDownloadUrl(String path) =>
+      _uri(kApiBase, '/api/admin/files/download', {'path': path}).toString();
 
   /// 把服务端返回的相对路径（图片 / 预览链接）拼成绝对地址；
   /// 已是 http(s)、data 等带 scheme 的地址原样返回。
@@ -425,18 +381,14 @@ class Api {
   /// path 为相对文件区根目录的路径，根目录为 ''（越界由后端拦截）。
   /// _uri 的 queryParameters 走 Uri.encodeQueryComponent，`lost+found` 等名称编码正确。
   static Future<Map<String, dynamic>> fileList(String path) async {
-    final res = await http.get(
-      _uri(kApiBase, '/api/admin/files', {'path': path}),
-      headers: _headers(),
-    );
+    final res = await _get(_uri(kApiBase, '/api/admin/files', {'path': path}));
     return _decode(res);
   }
 
   /// POST /api/admin/files/mkdir { path, name }
   static Future<void> fileMkdir(String dir, String name) async {
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/admin/files/mkdir'),
-      headers: _headers(),
       body: jsonEncode({'path': dir, 'name': name}),
     );
     _decode(res);
@@ -444,9 +396,8 @@ class Api {
 
   /// POST /api/admin/files/rename { path, name }
   static Future<void> fileRename(String path, String name) async {
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/admin/files/rename'),
-      headers: _headers(),
       body: jsonEncode({'path': path, 'name': name}),
     );
     _decode(res);
@@ -454,19 +405,9 @@ class Api {
 
   /// DELETE /api/admin/files?path=（目录递归删除）
   static Future<void> fileDelete(String path) async {
-    final res = await http.delete(
-      _uri(kApiBase, '/api/admin/files', {'path': path}),
-      headers: _headers(),
-    );
+    final res = await _delete(_uri(kApiBase, '/api/admin/files', {'path': path}));
     _decode(res);
   }
-
-  /// 文件下载 URL（token 走查询参数，供 url_launcher 打开；<a>/浏览器无法带自定义头）
-  static String fileDownloadUrl(String path) => _uri(
-        kApiBase,
-        '/api/admin/files/download',
-        {'path': path, 'token': _token},
-      ).toString();
 
   /// POST /api/admin/files/upload?path=（multipart 字段名 file，上限 500MB）
   /// onProgress 回调已发送字节数（HTTP 段），落盘耗时可配合 99% 文案；
@@ -478,18 +419,18 @@ class Api {
     void Function(int sent, int total)? onProgress,
     Future<void>? abortTrigger,
   }) async {
-    final req = _ProgressMultipartRequest(
-      'POST',
-      _uri(kApiBase, '/api/admin/files/upload', {'path': dir}),
-      onProgress: onProgress,
+    final res = await _sendMultipart(
+      (headers) async => _ProgressMultipartRequest(
+        'POST',
+        _uri(kApiBase, '/api/admin/files/upload', {'path': dir}),
+        onProgress: onProgress,
+      )
+        ..headers.addAll(headers)
+        ..abortTrigger = abortTrigger
+        ..files.add(
+          await http.MultipartFile.fromPath('file', file.path, filename: filename),
+        ),
     );
-    req.headers['Authorization'] = 'Bearer $_token';
-    req.abortTrigger = abortTrigger;
-    req.files.add(
-      await http.MultipartFile.fromPath('file', file.path, filename: filename),
-    );
-    final streamed = await req.send();
-    final res = await http.Response.fromStream(streamed);
     return _decode(res);
   }
 
@@ -500,10 +441,7 @@ class Api {
   /// GET /api/admin/files/shares -> { shares: [...] }
   /// 列表接口正常返回 { shares }，这里兼容裸数组（双保险）。
   static Future<List<Map<String, dynamic>>> fileShares() async {
-    final res = await http.get(
-      _uri(kApiBase, '/api/admin/files/shares'),
-      headers: _headers(),
-    );
+    final res = await _get(_uri(kApiBase, '/api/admin/files/shares'));
     return _decodeListOr(res, 'shares')
         .whereType<Map>()
         .map((m) => Map<String, dynamic>.from(m))
@@ -527,9 +465,8 @@ class Api {
     }
     final n = note?.trim() ?? '';
     if (n.isNotEmpty) body['note'] = n;
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/admin/files/shares'),
-      headers: _headers(),
       body: jsonEncode(body),
     );
     return _shareRecord(_decode(res));
@@ -547,9 +484,8 @@ class Api {
     if (expiresAt != null) body['expiresAt'] = expiresAt;
     if (note != null) body['note'] = note;
     if (revoked != null) body['revoked'] = revoked;
-    final res = await http.patch(
+    final res = await _patch(
       _uri(kApiBase, '/api/admin/files/shares/${Uri.encodeComponent(id)}'),
-      headers: _headers(),
       body: jsonEncode(body),
     );
     return _shareRecord(_decode(res));
@@ -557,9 +493,8 @@ class Api {
 
   /// DELETE /api/admin/files/shares/{id}（仅删记录，不动磁盘文件）
   static Future<void> fileShareDelete(String id) async {
-    final res = await http.delete(
+    final res = await _delete(
       _uri(kApiBase, '/api/admin/files/shares/${Uri.encodeComponent(id)}'),
-      headers: _headers(),
     );
     _decode(res);
   }
@@ -574,18 +509,14 @@ class Api {
 
   /// POST /api/admin/totp/reset -> { secret, otpauthUri, expiresIn }
   static Future<Map<String, dynamic>> totpReset() async {
-    final res = await http.post(
-      _uri(kApiBase, '/api/admin/totp/reset'),
-      headers: _headers(),
-    );
+    final res = await _post(_uri(kApiBase, '/api/admin/totp/reset'));
     return _decode(res);
   }
 
   /// POST /api/admin/totp/confirm { code }
   static Future<void> totpResetConfirm(String code) async {
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/admin/totp/confirm'),
-      headers: _headers(),
       body: jsonEncode({'code': code}),
     );
     _decode(res);
@@ -595,10 +526,7 @@ class Api {
 
   /// GET /api/blog/admin/posts -> { list }
   static Future<List<dynamic>> blogPosts() async {
-    final res = await http.get(
-      _uri(kApiBase, '/api/blog/admin/posts'),
-      headers: _headers(),
-    );
+    final res = await _get(_uri(kApiBase, '/api/blog/admin/posts'));
     final data = _decode(res);
     final list = data['list'];
     return list is List ? list : [];
@@ -606,9 +534,8 @@ class Api {
 
   /// POST /api/blog/admin/posts
   static Future<Map<String, dynamic>> blogCreatePost(Map<String, dynamic> body) async {
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/blog/admin/posts'),
-      headers: _headers(),
       body: jsonEncode(body),
     );
     return _decode(res);
@@ -616,9 +543,8 @@ class Api {
 
   /// PUT /api/blog/admin/posts/{id}
   static Future<Map<String, dynamic>> blogUpdatePost(int id, Map<String, dynamic> body) async {
-    final res = await http.put(
+    final res = await _put(
       _uri(kApiBase, '/api/blog/admin/posts/$id'),
-      headers: _headers(),
       body: jsonEncode(body),
     );
     return _decode(res);
@@ -626,29 +552,22 @@ class Api {
 
   /// DELETE /api/blog/admin/posts/{id}
   static Future<void> blogDeletePost(int id) async {
-    final res = await http.delete(
-      _uri(kApiBase, '/api/blog/admin/posts/$id'),
-      headers: _headers(),
-    );
+    final res = await _delete(_uri(kApiBase, '/api/blog/admin/posts/$id'));
     _decode(res);
   }
 
   /// GET /api/blog/admin/posts/{id}/preview-link -> { published, url }
   /// 已发布回公开地址；草稿附短时效预览令牌（url 为服务端返回的相对路径）。
   static Future<Map<String, dynamic>> blogPostPreviewLink(int id) async {
-    final res = await http.get(
+    final res = await _get(
       _uri(kApiBase, '/api/blog/admin/posts/$id/preview-link'),
-      headers: _headers(),
     );
     return _decode(res);
   }
 
   /// GET /api/blog/admin/collections -> { list }
   static Future<List<dynamic>> blogCollections() async {
-    final res = await http.get(
-      _uri(kApiBase, '/api/blog/admin/collections'),
-      headers: _headers(),
-    );
+    final res = await _get(_uri(kApiBase, '/api/blog/admin/collections'));
     final data = _decode(res);
     final list = data['list'];
     return list is List ? list : [];
@@ -656,9 +575,8 @@ class Api {
 
   /// POST /api/blog/admin/collections
   static Future<Map<String, dynamic>> blogCreateCollection(Map<String, dynamic> body) async {
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/blog/admin/collections'),
-      headers: _headers(),
       body: jsonEncode(body),
     );
     return _decode(res);
@@ -669,9 +587,8 @@ class Api {
     int id,
     Map<String, dynamic> body,
   ) async {
-    final res = await http.put(
+    final res = await _put(
       _uri(kApiBase, '/api/blog/admin/collections/$id'),
-      headers: _headers(),
       body: jsonEncode(body),
     );
     return _decode(res);
@@ -679,25 +596,23 @@ class Api {
 
   /// DELETE /api/blog/admin/collections/{id}
   static Future<void> blogDeleteCollection(int id) async {
-    final res = await http.delete(
-      _uri(kApiBase, '/api/blog/admin/collections/$id'),
-      headers: _headers(),
-    );
+    final res = await _delete(_uri(kApiBase, '/api/blog/admin/collections/$id'));
     _decode(res);
   }
 
   /// POST /api/blog/admin/upload（multipart 字段名 image）-> { url }
   static Future<String> blogUploadImage(File file, String filename) async {
-    final req = http.MultipartRequest(
-      'POST',
-      _uri(kApiBase, '/api/blog/admin/upload'),
+    final res = await _sendMultipart(
+      (headers) async => http.MultipartRequest(
+        'POST',
+        _uri(kApiBase, '/api/blog/admin/upload'),
+      )
+        ..headers.addAll(headers)
+        ..files.add(
+          await http.MultipartFile.fromPath('image', file.path, filename: filename),
+        ),
+      timeout: const Duration(seconds: 60),
     );
-    req.headers['Authorization'] = 'Bearer $_token';
-    req.files.add(
-      await http.MultipartFile.fromPath('image', file.path, filename: filename),
-    );
-    final streamed = await req.send().timeout(const Duration(seconds: 60));
-    final res = await http.Response.fromStream(streamed);
     final data = _decode(res);
     final url = data['url'];
     if (url is! String || url.isEmpty) {
@@ -726,10 +641,7 @@ class Api {
     if (level != null && level.isNotEmpty) query['level'] = level;
     if (source != null && source.isNotEmpty) query['source'] = source;
     if (type != null && type.isNotEmpty) query['type'] = type;
-    final res = await http.get(
-      _uri(kApiBase, '/api/admin/notifications', query),
-      headers: _headers(),
-    );
+    final res = await _get(_uri(kApiBase, '/api/admin/notifications', query));
     return _decode(res);
   }
 
@@ -738,9 +650,8 @@ class Api {
   ///
   /// 类别由服务端定义，客户端**不内置任何清单**；服务端新增类别无需发版。
   static Future<List<NotificationType>> notificationTypes() async {
-    final res = await http.get(
+    final res = await _get(
       _uri(kApiBase, '/api/admin/notifications/types'),
-      headers: _headers(),
     );
     final data = _decode(res);
     final raw = data['types'];
@@ -753,19 +664,13 @@ class Api {
 
   /// POST /api/admin/notifications/{id}/read -> { ok: true }
   static Future<void> notificationRead(int id) async {
-    final res = await http.post(
-      _uri(kApiBase, '/api/admin/notifications/$id/read'),
-      headers: _headers(),
-    );
+    final res = await _post(_uri(kApiBase, '/api/admin/notifications/$id/read'));
     _decode(res);
   }
 
   /// POST /api/admin/notifications/read-all -> { ok: true, count: N }
   static Future<int> notificationReadAll() async {
-    final res = await http.post(
-      _uri(kApiBase, '/api/admin/notifications/read-all'),
-      headers: _headers(),
-    );
+    final res = await _post(_uri(kApiBase, '/api/admin/notifications/read-all'));
     final data = _decode(res);
     final count = data['count'];
     return count is num ? count.toInt() : 0;
@@ -773,10 +678,7 @@ class Api {
 
   /// DELETE /api/admin/notifications/{id} -> { ok: true }
   static Future<void> notificationDelete(int id) async {
-    final res = await http.delete(
-      _uri(kApiBase, '/api/admin/notifications/$id'),
-      headers: _headers(),
-    );
+    final res = await _delete(_uri(kApiBase, '/api/admin/notifications/$id'));
     _decode(res);
   }
 
@@ -788,16 +690,11 @@ class Api {
   static Future<ApiCallResult> createNotification(
     Map<String, dynamic> payload,
   ) async {
-    final res = await http.post(
+    final res = await _post(
       _uri(kApiBase, '/api/admin/notifications'),
-      headers: _headers(),
       body: jsonEncode(payload),
     );
-    if (res.statusCode == 401) _notifyAuthRequired();
-    return ApiCallResult(
-      status: res.statusCode,
-      body: utf8.decode(res.bodyBytes),
-    );
+    return ApiCallResult(status: res.statusCode, body: utf8.decode(res.bodyBytes));
   }
 
   /* ============ SSE 实时流 ============ */
@@ -813,9 +710,8 @@ class Api {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 15)
       ..badCertificateCallback = (cert, host, port) => false;
-    final request = client.getUrl(_uri(kApiBase, '/api/admin/system/stream'));
     final handle = SystemStreamHandle._(client);
-    handle._run(request, onSnapshot, onError, onDone);
+    handle._run(onSnapshot, onError, onDone);
     return handle;
   }
 
@@ -852,7 +748,6 @@ class Api {
   /// 解析数组响应（服务端直接返回 JSON 数组，如 system/history）
   static List<dynamic> _decodeList(http.Response res) {
     if (res.statusCode == 401) {
-      _notifyAuthRequired();
       throw ApiException('未登录或登录已过期', code: 401);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -869,7 +764,6 @@ class Api {
   /// 解析「对象包裹的数组字段」或「裸数组」两种响应（分享列表双保险）
   static List<dynamic> _decodeListOr(http.Response res, String key) {
     if (res.statusCode == 401) {
-      _notifyAuthRequired();
       throw ApiException('未登录或登录已过期', code: 401);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -883,9 +777,10 @@ class Api {
     return const [];
   }
 
+  /// 401 已由 [_authed] 处理（续期失败才走到这里）：这里只把 401 转成 ApiException，
+  /// 不再重复触发全局登出。
   static Map<String, dynamic> _decode(http.Response res) {
     if (res.statusCode == 401) {
-      _notifyAuthRequired();
       throw ApiException('未登录或登录已过期', code: 401);
     }
     Map<String, dynamic> data;
@@ -965,21 +860,37 @@ class SystemStreamHandle {
   bool _cancelled = false;
   bool _done = false;
 
+  /// 建立连接并带上当前 Bearer；401 时先续期一次再重连。
+  Future<HttpClientResponse> _open() async {
+    final req = await _client.getUrl(Api._uri(kApiBase, '/api/admin/system/stream'));
+    _request = req;
+    final token = Auth.accessToken;
+    if (token.isNotEmpty) req.headers.set('Authorization', 'Bearer $token');
+    return req.close();
+  }
+
   Future<void> _run(
-    Future<HttpClientRequest> request,
     void Function(Map<String, dynamic> snapshot) onSnapshot,
     void Function(String? error)? onError,
     void Function()? onDone,
   ) async {
     try {
-      final req = await request;
+      var res = await _open();
       if (_cancelled) {
-        req.abort();
+        _client.close(force: true);
         return;
       }
-      _request = req;
-      req.headers.set('Authorization', 'Bearer ${Api.token}');
-      final res = await req.close();
+      if (res.statusCode == 401 && await Auth.refresh()) {
+        if (_cancelled) {
+          _client.close(force: true);
+          return;
+        }
+        res = await _open();
+        if (_cancelled) {
+          _client.close(force: true);
+          return;
+        }
+      }
       if (res.statusCode != 200) {
         if (!_cancelled) onError?.call(Api._errorOfStatus(res.statusCode));
         if (!_cancelled) onDone?.call();
