@@ -1,6 +1,6 @@
 # AGENTS.md — home-admin（Flutter 管理后台 App）
 
-> AI 编码代理进入本仓库先读本文件。README.md 是 Flutter 模板原文，内容过时；以本文件为准。
+> AI 编码代理进入本仓库先读本文件。`README.md` 已是项目说明（构建 + PKCE + 启动流程），两者不一致时以本文件为准。
 
 ## 这个项目是什么
 
@@ -22,13 +22,14 @@
 - Flutter（Dart SDK `>=3.9.0 <4.0.0`），Material
 - 依赖：`http`、`flutter_secure_storage`（OAuth2 令牌存系统安全存储）、`crypto`（PKCE 的 S256）、`webview_flutter`（终端 / Hermes Tab）、`image_picker`、`file_picker`、`path_provider`、`flutter_markdown`、`markdown`、`qr_flutter`、`url_launcher`、`shared_preferences`（仅存主题/草稿/终端标签等非敏感 UI 状态，**不再存 token**）
 - lint：`flutter_lints`
-- 测试：`flutter test`（PKCE 纯逻辑、媒体解析、通知模型/页面、Hermes 抽屉等）
+- 测试：`flutter test`（PKCE 纯逻辑、媒体解析、通知模型/页面、Hermes 抽屉、启动降级等）
 
 ## 目录结构
 
 ```
 lib/
-├── main.dart              # 入口（加载安全存储令牌）+ 主题装配
+├── main.dart              # 入口：只做同步装配 + 最先 runApp（不 await 任何 IO）
+├── startup.dart           # 启动编排（runApp 之后异步初始化、超时、降级、占位）
 ├── api.dart               # REST 封装（统一 Bearer、401 refresh 重试、全局登出回调）
 ├── auth.dart              # OAuth2 PKCE 登录/续期/登出 + 系统安全存储
 ├── pkce.dart              # PKCE 纯逻辑（verifier/challenge/state，可单测）
@@ -39,6 +40,7 @@ lib/
 ├── command_palette.dart
 └── media_tags.dart / file_refs.dart / image_refs.dart   # 消息引用解析（与 admin-web 同语义）
 test/pkce_test.dart        # PKCE 纯函数单测（含 RFC 7636 测试向量）
+test/startup_test.dart     # 启动降级：安全存储异常仍出首帧、不阻断登录
 android/                   # 标准 Flutter Android 工程
 ```
 
@@ -93,6 +95,24 @@ App 是**原生客户端**，与系统浏览器的 cookie store 不共享，所�
 **为什么回调端口固定 53682**：redirect_uri 必须与客户端注册值**精确匹配**（不许通配），所以
 `redirect_uri` 与本地监听端口都写死为 `http://127.0.0.1:53682/callback`。
 
+## 启动流程：首帧优先，初始化全部在 runApp 之后（2026-09-29 起）
+
+**铁律：`main()` 里 `runApp` 之前只允许同步调用**（`WidgetsFlutterBinding.ensureInitialized()` +
+回调赋值），**不得 await 任何 IO**——`Auth.init()` / `ensureValidAccessToken()` / `ThemePrefs.load()` /
+`NotificationService.init()` 曾经串行 await 在 runApp 前，设备 KeyStore 异常时整条链挂住 → 永远白屏。
+
+- 顺序：`ensureInitialized()` → 赋值 `Api.onAuthRequired` / `onNotificationAuthRequired` →
+  `runApp(const AdminApp())` → `unawaited(AppStartup.run())`。
+- `lib/startup.dart` 负责编排：**每步独立 try/catch + 超时**（本地读写 `kStorageTimeout` = 5s），
+  失败只降级、绝不抛出、绝不阻塞界面。状态经 `AppStartup.status` 驱动 `StartupGate`：
+  加载态先渲染 `StartupSplash`（同底色，不闪白屏），就绪后按 `loggedIn` 切登录页 / 主页。
+- 安全存储不可用（读写超时或抛错）→ `Auth.storageAvailable=false`：本次会话走**内存态**
+  （可登录、可调用 API），但 UI 必须明确提示「本次登录不会持久保存」，**不许静默假装成功**。
+- 通知服务初始化单飞且**永不抛出**；它起不来不得影响主界面与登录（`NotificationService.init`
+  失败保持未初始化，`HomePage._initNotifications` 整体 try/catch）。
+- 回归用例：`test/startup_test.dart`（安全存储异常时 `main()` 仍出首帧并降级登录页；初始化失败
+  不阻断登录）。改启动流程必须同步这些用例。
+
 ## ✅ 私有地址一律编译期注入
 
 `lib/api.dart`（API_BASE）、`lib/auth.dart`（AUTH_BASE / OAUTH_CLIENT_ID）、
@@ -119,12 +139,13 @@ flutter build apk --release \
 
 ## 已知坑
 
+- **启动路径禁止在 `runApp` 前 await 任何 IO**：安全存储 / 网络 / 前台服务一旦挂住就是永久白屏（无异常日志）。初始化只走 `startup.dart` 的异步编排，且每步必须有超时与降级。
 - **终端 Tab 与 Web 端必须行为一致**（`terminal_page.dart` ↔ `admin-web/src/components/Terminal.jsx`）：会话名 + 12h 票据按 `--url-arg` 顺序传给 wrapper（第 1 个 = 会话名、第 2 个 = 票据）；存活点 6s 轮询且**只在 Tab 激活时轮询**；票据只在内存保存（App 重启即失效）；关标签结束对应会话，锁定则批量结束。改一边就要同步另一边。
 - 与后端协议对齐 `admin-web`：`@file:` / `@image:` / MEDIA 标签的解析语义必须两边一致（改了 `media_tags.dart` 要同步 `admin-web/src/mediaTags.js`）。
 - token 存**系统安全存储**（`flutter_secure_storage`），401 且续期失败时走 `forceLogout()`（幂等，可重复触发）；`shared_preferences` 只放主题/草稿/终端标签等非敏感 UI 状态。
 - 终端 WebView 首帧用 `Api.webviewHeaders()` 带 `Authorization: Bearer`（不再把 token 拼进 URL）；`ttyd` 子资源同源加载。
 - 文件下载走系统浏览器（网关会话 cookie 鉴权，URL 不带 token）；App 内带 Bearer 取字节用 `Api.download()`。
-- `README.md` 已改写为项目说明（构建 + PKCE 流程），不再是 `flutter create` 模板原文。
+- `README.md` 已改写为项目说明（构建 + PKCE + 启动流程），不再是 `flutter create` 模板原文。
 - 仓库里没有 iOS 工程，目标平台只有 Android。
 
 ## 项目记忆（PROJECT_MEMORY.md）
