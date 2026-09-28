@@ -40,14 +40,19 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// 主页挂载即恢复通知状态并确保前台服务在跑；由本地通知冷启动则直达通知页。
+  /// 通知相关全部包在 try/catch 内：服务起不来不影响主界面。
   Future<void> _initNotifications() async {
-    onOpenNotifications = () {
-      if (mounted) _selectTab(6);
-    };
-    final launched = await NotificationService.launchedFromNotification();
-    await NotificationStore.syncFromService();
-    await NotificationService.ensureStarted();
-    if (launched && mounted) await _selectTab(6);
+    try {
+      onOpenNotifications = () {
+        if (mounted) _selectTab(6);
+      };
+      final launched = await NotificationService.launchedFromNotification();
+      await NotificationStore.syncFromService();
+      await NotificationService.ensureStarted();
+      if (launched && mounted) await _selectTab(6);
+    } catch (e) {
+      debugPrint('通知初始化失败（已隔离）: $e');
+    }
   }
 
   @override

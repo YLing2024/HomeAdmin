@@ -49,42 +49,57 @@ class NotificationService {
   static const int _serviceId = 2005;
 
   static bool _initialized = false;
+  static Future<void>? _initializing;
 
   static bool get _android => !kIsWeb && Platform.isAndroid;
 
-  /// 在 `runApp` 前调用：初始化前台服务与本地通知。
-  static Future<void> init() async {
-    if (_initialized) return;
-    _initialized = true;
-    if (!_android) return;
+  /// 在 `runApp` 之后调用：初始化前台服务与本地通知。
+  ///
+  /// 幂等且单飞：并发调用共用同一次初始化；**永不抛出**——服务起不来只记录并
+  /// 保持未初始化，主界面与登录不受影响（见 `startup.dart` 的隔离调用）。
+  static Future<void> init() {
+    if (_initialized) return Future<void>.value();
+    return _initializing ??= _doInit().whenComplete(() => _initializing = null);
+  }
 
-    FlutterForegroundTask.initCommunicationPort();
-    FlutterForegroundTask.init(
-      androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'home_admin_service',
-        channelName: '后台通知服务',
-        channelDescription: '保持通知连接常驻',
-        channelImportance: NotificationChannelImportance.LOW,
-        priority: NotificationPriority.LOW,
-        enableVibration: false,
-        playSound: false,
-      ),
-      iosNotificationOptions: const IOSNotificationOptions(
-        showNotification: false,
-        playSound: false,
-      ),
-      foregroundTaskOptions: ForegroundTaskOptions(
-        // 15s 一次：用于调用 onRepeatEvent 做心跳超时兜底检查
-        eventAction: ForegroundTaskEventAction.repeat(15000),
-        autoRunOnBoot: true,
-        autoRunOnMyPackageReplaced: true,
-        allowWakeLock: true,
-        allowAutoRestart: true,
-      ),
-    );
-    FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+  static Future<void> _doInit() async {
+    if (!_android) {
+      _initialized = true;
+      return;
+    }
+    try {
+      FlutterForegroundTask.initCommunicationPort();
+      FlutterForegroundTask.init(
+        androidNotificationOptions: AndroidNotificationOptions(
+          channelId: 'home_admin_service',
+          channelName: '后台通知服务',
+          channelDescription: '保持通知连接常驻',
+          channelImportance: NotificationChannelImportance.LOW,
+          priority: NotificationPriority.LOW,
+          enableVibration: false,
+          playSound: false,
+        ),
+        iosNotificationOptions: const IOSNotificationOptions(
+          showNotification: false,
+          playSound: false,
+        ),
+        foregroundTaskOptions: ForegroundTaskOptions(
+          // 15s 一次：用于调用 onRepeatEvent 做心跳超时兜底检查
+          eventAction: ForegroundTaskEventAction.repeat(15000),
+          autoRunOnBoot: true,
+          autoRunOnMyPackageReplaced: true,
+          allowWakeLock: true,
+          allowAutoRestart: true,
+        ),
+      );
+      FlutterForegroundTask.addTaskDataCallback(_onTaskData);
 
-    await _initLocalNotifications();
+      await _initLocalNotifications();
+      _initialized = true;
+    } catch (e) {
+      debugPrint('通知服务初始化失败（已隔离）: $e');
+      _initialized = false;
+    }
   }
 
   static Future<void> _initLocalNotifications() async {
@@ -109,41 +124,55 @@ class NotificationService {
 
   /// 已登录则确保服务在运行；返回当前是否运行。
   static Future<bool> ensureStarted() async {
+    await init();
     if (!_android || !_initialized) return false;
     if (!Auth.hasSession) return false;
-    if (await FlutterForegroundTask.isRunningService) {
-      NotificationStore.running.value = true;
-      return true;
+    try {
+      if (await FlutterForegroundTask.isRunningService) {
+        NotificationStore.running.value = true;
+        return true;
+      }
+      final permission =
+          await FlutterForegroundTask.checkNotificationPermission();
+      if (permission != NotificationPermission.granted) {
+        await FlutterForegroundTask.requestNotificationPermission();
+      }
+      final result = await FlutterForegroundTask.startService(
+        serviceId: _serviceId,
+        serviceTypes: const [ForegroundServiceTypes.dataSync],
+        notificationTitle: kNotificationServiceTitle,
+        notificationText: kNotificationServiceText,
+        notificationInitialRoute: '/',
+        callback: notificationServiceCallback,
+      );
+      final ok = result is ServiceRequestSuccess;
+      NotificationStore.running.value = ok;
+      return ok;
+    } catch (e) {
+      debugPrint('通知服务启动失败（已隔离）: $e');
+      NotificationStore.running.value = false;
+      return false;
     }
-    final permission =
-        await FlutterForegroundTask.checkNotificationPermission();
-    if (permission != NotificationPermission.granted) {
-      await FlutterForegroundTask.requestNotificationPermission();
-    }
-    final result = await FlutterForegroundTask.startService(
-      serviceId: _serviceId,
-      serviceTypes: const [ForegroundServiceTypes.dataSync],
-      notificationTitle: kNotificationServiceTitle,
-      notificationText: kNotificationServiceText,
-      notificationInitialRoute: '/',
-      callback: notificationServiceCallback,
-    );
-    final ok = result is ServiceRequestSuccess;
-    NotificationStore.running.value = ok;
-    return ok;
   }
 
   /// 重启通知服务；未运行则直接启动。返回是否最终在运行。
   static Future<bool> restart() async {
+    await init();
     if (!_android || !_initialized) return false;
-    if (await FlutterForegroundTask.isRunningService) {
-      await FlutterForegroundTask.restartService();
-    } else {
-      await ensureStarted();
+    try {
+      if (await FlutterForegroundTask.isRunningService) {
+        await FlutterForegroundTask.restartService();
+      } else {
+        await ensureStarted();
+      }
+      final running = await FlutterForegroundTask.isRunningService;
+      NotificationStore.running.value = running;
+      return running;
+    } catch (e) {
+      debugPrint('通知服务重启失败（已隔离）: $e');
+      NotificationStore.running.value = false;
+      return false;
     }
-    final running = await FlutterForegroundTask.isRunningService;
-    NotificationStore.running.value = running;
-    return running;
   }
 
   /// 停止服务（退出登录时调用）。
@@ -161,18 +190,32 @@ class NotificationService {
 
   static Future<bool> isRunning() async {
     if (!_android || !_initialized) return false;
-    return FlutterForegroundTask.isRunningService;
+    try {
+      return await FlutterForegroundTask.isRunningService;
+    } catch (e) {
+      debugPrint('读取通知服务状态失败: $e');
+      return false;
+    }
   }
 
   static Future<bool> isIgnoringBatteryOptimizations() async {
     if (!_android || !_initialized) return false;
-    return FlutterForegroundTask.isIgnoringBatteryOptimizations;
+    try {
+      return await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+    } catch (e) {
+      debugPrint('读取电池优化状态失败: $e');
+      return false;
+    }
   }
 
   /// 申请忽略电池优化（自签名分发，不走商店，可用）。
   static Future<void> requestIgnoreBatteryOptimization() async {
     if (!_android || !_initialized) return;
-    await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+    try {
+      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+    } catch (e) {
+      debugPrint('申请忽略电池优化失败: $e');
+    }
   }
 
   /// App 是否由点开本地通知启动（冷启动直达通知页）。
