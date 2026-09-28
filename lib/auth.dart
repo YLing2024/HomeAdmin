@@ -48,8 +48,11 @@ const String kRedirectUri = 'http://127.0.0.1:$kLoopbackPort/callback';
 /// 请求的 scope：必须含 `openid`。
 const String kOAuthScope = 'openid profile';
 
-/// 网络请求超时（换令牌 / 续期 / 吊销）。
+/// 网络请求超时（换令牌 / 续期）。
 const Duration _kHttpTimeout = Duration(seconds: 20);
+
+/// 吊销请求超时（best-effort，短一点，别拖住登出）。
+const Duration _kRevokeTimeout = Duration(seconds: 5);
 
 /// PKCE 登录等待回调的总超时。
 const Duration _kLoginTimeout = Duration(minutes: 5);
@@ -292,13 +295,17 @@ class Auth {
     }
   }
 
-  /// 登出：先清空安全存储，再 best-effort 调 /revoke（token + client_id）。
-  /// 不做任何「静默登出后还能用」的缓存。
+  /// 登出：先清空安全存储（同步语义，立刻不可用），再 best-effort 后台调 /revoke
+  /// （token + client_id）。不做任何「静默登出后还能用」的缓存。
   static Future<void> logout() async {
     final current = _tokens ?? await _read();
     await clear();
-    final refresh = current?.refreshToken;
-    final access = current?.accessToken;
+    unawaited(_revokeAll(current));
+  }
+
+  static Future<void> _revokeAll(AuthTokens? tokens) async {
+    final refresh = tokens?.refreshToken;
+    final access = tokens?.accessToken;
     if (refresh != null && refresh.isNotEmpty) {
       await _revoke(refresh);
     }
@@ -315,7 +322,7 @@ class Auth {
             headers: _formHeaders,
             body: {'token': token, 'client_id': kOAuthClientId},
           )
-          .timeout(_kHttpTimeout);
+          .timeout(_kRevokeTimeout);
     } catch (_) {
       /* 吊销失败不阻断登出：本地令牌已清，无法再用 */
     }

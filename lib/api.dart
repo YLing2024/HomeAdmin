@@ -268,6 +268,8 @@ class Api {
   /// 否则输错口令会被全局登出；429 时 ApiException.retryAfter 为锁定剩余秒数。
   static Future<Map<String, dynamic>> termUnlock(String password) async {
     // 口令错误与登录过期同为 401：这里不走 _authed 的续期/登出，避免误登出。
+    // 但先确保 access 未过期，免得把「会话过期」误报成「口令不正确」。
+    await Auth.ensureValidAccessToken();
     final res = await http.post(
       _uri(kApiBase, '/api/admin/term/unlock'),
       headers: _headers(),
