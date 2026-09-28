@@ -20,6 +20,11 @@ dependencies:
   url_launcher: ^6.3.0
   markdown: ^7.2.2
   webview_flutter: ^4.13.1
+  # OAuth2 PKCE：code_challenge 的 S256（SHA-256）计算
+  crypto: ^3.0.7
+  # OAuth2 令牌存系统安全存储（Android Keystore / iOS Keychain）
+  # 锁 10.3.4：11.x 依赖 win32 ^6，与 file_picker 8.3.7 的 win32 ^5 冲突
+  flutter_secure_storage: ^10.3.4
   # Android 保活：前台服务（常驻通知 + 独立 isolate）
   flutter_foreground_task: ^10.0.0
   # 收到新通知时弹系统本地通知
