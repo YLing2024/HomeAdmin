@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'api.dart';
 import 'theme.dart';
+import 'trend_granularity.dart';
 
 class SystemPage extends StatefulWidget {
   const SystemPage({super.key, this.active = true});
@@ -26,13 +27,24 @@ class _SystemPageState extends State<SystemPage> {
   DateTime? _updated; // 最近一次快照时间（对齐 Web「更新于」）
   String _procSort = 'mem';
 
+  // 趋势粒度：App 会话内记忆（State 随 IndexedStack 常驻），退出 App 回默认「秒」（对齐 Web sessionStorage）
+  TrendGranularity _granularity = TrendGranularity.sec;
+  List<Map<String, dynamic>> _granPoints = []; // 非秒档最近一帧（请求失败保留，不清空）
+  int? _granRecordedMinutes; // 非秒档 meta.recordedSeconds 的分钟数（空态文案用）
+  final Map<TrendGranularity, List<Map<String, dynamic>>> _granCache = {}; // 各档独立缓存
+  final Map<TrendGranularity, int> _granMetaMinutes = {}; // 各档 meta 分钟数缓存
+  Timer? _granTimer;
+
   SystemStreamHandle? _stream;
   Timer? _retryTimer;
 
   @override
   void initState() {
     super.initState();
-    if (widget.active) _connect();
+    if (widget.active) {
+      _connect();
+      _syncGranularityPolling();
+    }
   }
 
   @override
@@ -40,14 +52,17 @@ class _SystemPageState extends State<SystemPage> {
     super.didUpdateWidget(oldWidget);
     if (widget.active && !oldWidget.active) {
       _connect(); // 切回系统 Tab：重新建连
+      _syncGranularityPolling();
     } else if (!widget.active && oldWidget.active) {
       _disconnect(); // 切走：立即断开，零残留
+      _syncGranularityPolling(); // 同时停掉非秒档轮询
     }
   }
 
   @override
   void dispose() {
     _disconnect();
+    _granTimer?.cancel();
     super.dispose();
   }
 
@@ -169,9 +184,65 @@ class _SystemPageState extends State<SystemPage> {
     return '${p2(t.hour)}:${p2(t.minute)}:${p2(t.second)}';
   }
 
-  /// 手动刷新：重连 SSE 立即拉取最新快照
+  /// 手动刷新：重连 SSE 立即拉取最新快照；非秒档同时重拉聚合数据
   Future<void> _reconnect() async {
     _connect();
+    _syncGranularityPolling();
+  }
+
+  /* ============ 趋势粒度（对齐 Web System.jsx） ============ */
+
+  /// 切档：立即改档并按新档取数（秒档无轮询，用 SSE）。
+  void _selectGranularity(TrendGranularity g) {
+    if (g == _granularity) return;
+    setState(() => _granularity = g);
+    _syncGranularityPolling();
+  }
+
+  /// 按当前档位重设取数：秒档停轮询；非秒档先渲染该档缓存再立即拉一次，
+  /// 之后按档位间隔轮询（30s / 300s / 1800s）。切走 Tab 时不请求。
+  void _syncGranularityPolling() {
+    _granTimer?.cancel();
+    _granTimer = null;
+    final query = trendQueryOf(_granularity);
+    if (!widget.active || query == null) return;
+    final cached = _granCache[_granularity];
+    if (cached != null) {
+      // 切回已取过的档位：先渲染缓存，避免闪空（R4）
+      _granPoints = cached;
+      final minutes = _granMetaMinutes[_granularity];
+      if (minutes != null) _granRecordedMinutes = minutes;
+    }
+    unawaited(_loadGranularity());
+    _granTimer = Timer.periodic(
+      query.refresh,
+      (_) => unawaited(_loadGranularity()),
+    );
+  }
+
+  /// 非秒档拉取聚合点。失败保留上一帧，不弹错、不阻断页面（R4 / R11）。
+  Future<void> _loadGranularity() async {
+    final g = _granularity;
+    final query = trendQueryOf(g);
+    if (query == null) return;
+    try {
+      final metrics = await Api.systemMetrics(
+        range: query.range,
+        step: query.step,
+      );
+      if (!mounted || _granularity != g) return;
+      setState(() {
+        _granPoints = metrics.points;
+        _granCache[g] = metrics.points;
+        final minutes = trendRecordedMinutes(metrics.recordedSeconds);
+        if (minutes != null) {
+          _granRecordedMinutes = minutes;
+          _granMetaMinutes[g] = minutes;
+        }
+      });
+    } catch (_) {
+      // 保留上一帧，静默等下次刷新
+    }
   }
 
   @override
@@ -816,14 +887,26 @@ class _SystemPageState extends State<SystemPage> {
   /* ============ 趋势图 ============ */
 
   Widget _trendBlock(AppColors c) {
+    final sparse = _granularity != TrendGranularity.sec;
+    // 秒档沿用 SSE 实时 history；非秒档用聚合接口结果（R10）
+    final trend = sparse ? _granPoints : _history;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const BlockTitle('趋势'),
+        Row(
+          children: [
+            const BlockTitle('趋势'),
+            const Spacer(),
+            _granularityBar(c),
+          ],
+        ),
         const SizedBox(height: 8),
         TrendChart(
           title: 'CPU / 内存 / Swap（%）',
-          history: _history,
+          chartId: 'mem',
+          granularity: _granularity,
+          recordedMinutes: _granRecordedMinutes,
+          history: trend,
           series: const [
             TrendSeries('cpu', 'CPU', tone: TrendTone.muted),
             TrendSeries('mem_percent', '物理内存', tone: TrendTone.accent),
@@ -836,7 +919,10 @@ class _SystemPageState extends State<SystemPage> {
         const SizedBox(height: 12),
         TrendChart(
           title: 'PSI 压力 · some avg10（%）',
-          history: _history,
+          chartId: 'psi',
+          granularity: _granularity,
+          recordedMinutes: _granRecordedMinutes,
+          history: trend,
           series: const [
             TrendSeries('psi_mem_avg10', '内存', tone: TrendTone.danger),
             TrendSeries('psi_cpu_avg10', 'CPU', tone: TrendTone.accent),
@@ -849,7 +935,10 @@ class _SystemPageState extends State<SystemPage> {
         const SizedBox(height: 12),
         TrendChart(
           title: '网速（/s）',
-          history: _history,
+          chartId: 'net',
+          granularity: _granularity,
+          recordedMinutes: _granRecordedMinutes,
+          history: trend,
           series: const [
             TrendSeries('net_rx_rate', '↓ 下载', tone: TrendTone.accent),
             TrendSeries('net_tx_rate', '↑ 上传', tone: TrendTone.muted),
@@ -859,7 +948,10 @@ class _SystemPageState extends State<SystemPage> {
         const SizedBox(height: 12),
         TrendChart(
           title: '磁盘 I/O（/s）',
-          history: _history,
+          chartId: 'io',
+          granularity: _granularity,
+          recordedMinutes: _granRecordedMinutes,
+          history: trend,
           series: const [
             TrendSeries('disk_io_read', '读', tone: TrendTone.accent),
             TrendSeries('disk_io_write', '写', tone: TrendTone.muted),
@@ -867,6 +959,56 @@ class _SystemPageState extends State<SystemPage> {
           fmtValue: (v) => _fmtRate(v),
         ),
       ],
+    );
+  }
+
+  /// 粒度分段按钮组：直角、发丝线分隔，选中档位单琥珀点缀（对齐 Web .granularity）
+  Widget _granularityBar(AppColors c) {
+    const options = TrendGranularity.values;
+    return Semantics(
+      container: true,
+      label: '趋势粒度',
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: c.border, width: 0.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var i = 0; i < options.length; i++)
+              _granularityBtn(c, options[i], first: i == 0),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _granularityBtn(
+    AppColors c,
+    TrendGranularity g, {
+    required bool first,
+  }) {
+    final active = _granularity == g;
+    return InkWell(
+      onTap: () => _selectGranularity(g),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: active ? c.accentSoft : Colors.transparent,
+          border: first
+              ? null
+              : Border(left: BorderSide(color: c.border, width: 0.5)),
+        ),
+        child: Text(
+          trendGranularityLabel(g),
+          style: TextStyle(
+            color: active ? c.accent : c.muted,
+            fontSize: 10.5,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 0.1,
+          ),
+        ),
+      ),
     );
   }
 
@@ -987,22 +1129,40 @@ class TrendSeries {
   const TrendSeries(this.key, this.label, {this.tone = TrendTone.muted});
 }
 
+/// 趋势图平移位置记忆：键 `档位:图 id`。App 会话内有效，退出即失效（对齐 Web 模块级
+/// `chartViewMemory`）。R8：切档不串位、切回保留。
+final Map<String, ({int offset, bool follow})> _trendViewMemory = {};
+
 class TrendChart extends StatefulWidget {
   const TrendChart({
     super.key,
     required this.title,
+    required this.chartId,
+    required this.granularity,
     required this.history,
     required this.series,
     this.yMax,
     this.yLabel = '',
+    this.recordedMinutes,
     required this.fmtValue,
   });
 
   final String title;
+
+  /// 图标识（mem / psi / net / io）：平移位置按（档位 + 图）分别记忆。
+  final String chartId;
+
+  /// 当前粒度档位：决定窗口（秒 30 / 非秒 60）、X 轴刻度与稀疏渲染。
+  final TrendGranularity granularity;
+
   final List<Map<String, dynamic>> history;
   final List<TrendSeries> series;
   final double? yMax;
   final String yLabel;
+
+  /// 非秒档「数据积累中（已记录 N 分钟）」的 N；null 按 0。
+  final int? recordedMinutes;
+
   final String Function(num) fmtValue;
 
   @override
@@ -1010,10 +1170,41 @@ class TrendChart extends StatefulWidget {
 }
 
 class _TrendChartState extends State<TrendChart> {
-  static const int _window = 30;
   int _offset = 0;
   // 跟随最新：初始为 true；用户平移离开最新后关闭，拖回末尾或点「回最新」恢复
   bool _follow = true;
+
+  int get _window => trendWindow(widget.granularity);
+
+  bool get _sparse => widget.granularity != TrendGranularity.sec;
+
+  String get _memoryKey =>
+      '${trendGranularityId(widget.granularity)}:${widget.chartId}';
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreView();
+  }
+
+  @override
+  void didUpdateWidget(covariant TrendChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.granularity != widget.granularity ||
+        oldWidget.chartId != widget.chartId) {
+      _restoreView(); // 切档：恢复该（档位 + 图）上次的平移位置
+    }
+  }
+
+  void _restoreView() {
+    final m = _trendViewMemory[_memoryKey];
+    _offset = m?.offset ?? 0;
+    _follow = m?.follow ?? true;
+  }
+
+  void _remember(int offset, bool follow) {
+    _trendViewMemory[_memoryKey] = (offset: offset, follow: follow);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1021,19 +1212,18 @@ class _TrendChartState extends State<TrendChart> {
     final history = widget.history;
     final len = history.length;
 
-    if (len > _window) {
-      if (_follow) {
-        // 跟随态：初始及每次数据更新都对齐最新（对齐 Web followRef）
-        _offset = len - _window;
-      } else {
-        // 非跟随：仅做边界修正，保持当前位置不跳动
-        _offset = _offset.clamp(0, len - _window);
-      }
-    }
+    final slice = computeTrendSlice(
+      len: len,
+      window: _window,
+      offset: _offset,
+      follow: _follow,
+    );
+    _offset = slice.offset;
+    _remember(slice.offset, _follow);
+    final points = history.sublist(slice.start, slice.end);
 
-    final start = len <= _window ? 0 : _offset.clamp(0, len - _window);
-    final end = math.min(len, start + _window);
-    final slice = history.sublist(start, end);
+    // 秒档不足 2 点仍是「采集中」占位；非秒档 0 点才占位（单点要能看见）
+    final placeholder = _sparse ? len == 0 : len < 2;
 
     return PanelCard(
       title: widget.title,
@@ -1072,12 +1262,14 @@ class _TrendChartState extends State<TrendChart> {
             ],
           ),
           const SizedBox(height: 8),
-          if (len < 2)
+          if (placeholder)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 30),
               child: Center(
                 child: Text(
-                  '数据采集中…（约 3 秒后显示趋势）',
+                  _sparse
+                      ? trendAccumulatingText(widget.recordedMinutes)
+                      : '数据采集中…（约 3 秒后显示趋势）',
                   style: TextStyle(color: c.muted, fontSize: 12),
                 ),
               ),
@@ -1090,22 +1282,26 @@ class _TrendChartState extends State<TrendChart> {
                   onHorizontalDragEnd: (_) {},
                   onHorizontalDragUpdate: (d) {
                     if (len <= _window) return;
+                    final maxOffset = len - _window;
                     final next = (_offset - (d.primaryDelta! / 6).round())
-                        .clamp(0, len - _window);
+                        .clamp(0, maxOffset);
+                    final following = next >= maxOffset;
                     setState(() {
                       _offset = next;
                       // 拖回最末窗口即恢复跟随
-                      _follow = next >= len - _window;
+                      _follow = following;
                     });
+                    _remember(next, following);
                   },
                   child: CustomPaint(
                     size: Size.infinite,
                     painter: _TrendPainter(
-                      points: slice,
+                      points: points,
                       series: widget.series,
                       yMax: widget.yMax,
                       yLabel: widget.yLabel,
                       fmtValue: widget.fmtValue,
+                      granularity: widget.granularity,
                       c: c,
                     ),
                   ),
@@ -1118,10 +1314,14 @@ class _TrendChartState extends State<TrendChart> {
                 child: Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: InkWell(
-                    onTap: () => setState(() {
-                      _follow = true;
-                      _offset = len - _window;
-                    }),
+                    onTap: () {
+                      final next = math.max(0, len - _window);
+                      setState(() {
+                        _follow = true;
+                        _offset = next;
+                      });
+                      _remember(next, true);
+                    },
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
@@ -1157,6 +1357,7 @@ class _TrendPainter extends CustomPainter {
     required this.yMax,
     required this.yLabel,
     required this.fmtValue,
+    required this.granularity,
     required this.c,
   });
 
@@ -1165,6 +1366,7 @@ class _TrendPainter extends CustomPainter {
   final double? yMax;
   final String yLabel;
   final String Function(num) fmtValue;
+  final TrendGranularity granularity;
   final AppColors c;
 
   static const double _l = 52, _r = 12, _t = 12, _b = 24;
@@ -1231,19 +1433,41 @@ class _TrendPainter extends CustomPainter {
       textPainter.paint(canvas, Offset(_l - textPainter.width - 6, y - textPainter.height / 2));
     }
 
-    // X 轴时间标签：首/1/3/2/3/尾
-    final xIdx = <int>{0, (points.length - 1) ~/ 3, (2 * (points.length - 1)) ~/ 3, points.length - 1};
-    for (final i in xIdx) {
+    // X 轴时间标签：首/1/3/2/3/尾；刻度格式随档位（秒 HH:mm:ss / 分钟 HH:mm / 小时 MM-DD HH:00 / 天 MM-DD）
+    final single = points.length == 1;
+    double xAt(int i) => single
+        ? _l + plotW / 2
+        : _l + plotW * (i / (points.length - 1));
+    for (final i in trendTickIndices(points.length)) {
       final ts = points[i]['ts'];
-      final x = _l + plotW * (i / (points.length - 1));
-      textPainter.text = TextSpan(text: _fmtTime(ts), style: textStyle);
+      final x = xAt(i);
+      textPainter.text = TextSpan(text: formatTrendTick(ts, granularity), style: textStyle);
       textPainter.layout();
       textPainter.paint(canvas, Offset(x - textPainter.width / 2, _t + plotH + 4));
     }
 
     for (final s in series) {
+      final tone = _toneColor(c, s.tone);
+      if (single) {
+        // 稀疏单点：画点 + 水平虚线参考线（对齐 Web .chart-line-single）
+        final v = points[0][s.key];
+        if (v is! num) continue;
+        final y = _t + plotH * (1 - (v.toDouble().clamp(0, maxV) / maxV));
+        _dashedLine(
+          canvas,
+          Offset(_l, y),
+          Offset(_l + plotW, y),
+          Paint()
+            ..color = tone
+            ..strokeWidth = 1.6
+            ..strokeCap = StrokeCap.round
+            ..style = PaintingStyle.stroke,
+        );
+        canvas.drawCircle(Offset(xAt(0), y), 3, Paint()..color = tone);
+        continue;
+      }
       final linePaint = Paint()
-        ..color = _toneColor(c, s.tone)
+        ..color = tone
         ..strokeWidth = 1.6
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
@@ -1253,7 +1477,7 @@ class _TrendPainter extends CustomPainter {
       for (var i = 0; i < points.length; i++) {
         final v = points[i][s.key];
         if (v is! num) continue;
-        final x = _l + plotW * (i / (points.length - 1));
+        final x = xAt(i);
         final y = _t + plotH * (1 - (v.toDouble().clamp(0, maxV) / maxV));
         if (first) {
           path.moveTo(x, y);
@@ -1266,16 +1490,25 @@ class _TrendPainter extends CustomPainter {
     }
   }
 
-  String _fmtTime(dynamic ts) {
-    final t = ts is num ? ts.toInt() : 0;
-    final d = DateTime.fromMillisecondsSinceEpoch(t);
-    final h = d.hour.toString().padLeft(2, '0');
-    final m = d.minute.toString().padLeft(2, '0');
-    final s = d.second.toString().padLeft(2, '0');
-    return '$h:$m:$s';
+  /// 水平虚线（段长 4、间隔 3，对齐 Web `stroke-dasharray: 4 3`）
+  void _dashedLine(Canvas canvas, Offset a, Offset b, Paint paint) {
+    const dash = 4.0;
+    const gap = 3.0;
+    final total = (b - a).distance;
+    if (total <= 0) return;
+    final dir = (b - a) / total;
+    var d = 0.0;
+    while (d < total) {
+      final end = math.min(d + dash, total);
+      canvas.drawLine(a + dir * d, a + dir * end, paint);
+      d = end + gap;
+    }
   }
 
   @override
   bool shouldRepaint(covariant _TrendPainter old) =>
-      old.points != points || old.c != c || old.yMax != yMax;
+      old.points != points ||
+      old.c != c ||
+      old.yMax != yMax ||
+      old.granularity != granularity;
 }
