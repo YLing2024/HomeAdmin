@@ -49,8 +49,11 @@ class AuthModeProbe {
     if (hit != null) return Future<AuthMode>.value(hit);
     final running = _inflight;
     if (running != null) return running;
-    final f = _probe(client, baseUrl, timeout ?? probeTimeout)
-        .whenComplete(() => _inflight = null);
+    final f = _probe(
+      client,
+      baseUrl,
+      timeout ?? probeTimeout,
+    ).whenComplete(() => _inflight = null);
     _inflight = f;
     return f;
   }

@@ -99,7 +99,8 @@ class BuiltinLoginException implements Exception {
   final int? retryAfter;
 
   /// 服务端要求先绑定验证器（首次使用）。
-  bool get setupRequired => statusCode == 403 && errorCode == 'totp_setup_required';
+  bool get setupRequired =>
+      statusCode == 403 && errorCode == 'totp_setup_required';
 
   @override
   String toString() => message;
@@ -227,7 +228,10 @@ class Auth {
 
     HttpServer server;
     try {
-      server = await HttpServer.bind(InternetAddress.loopbackIPv4, kLoopbackPort);
+      server = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        kLoopbackPort,
+      );
     } on SocketException catch (e) {
       throw AuthException('无法监听本地回调端口 $kLoopbackPort：${e.message}');
     }
@@ -274,7 +278,8 @@ class Auth {
         error = 'state 校验失败，请重试';
       } else if ((q['error'] ?? '').isNotEmpty) {
         final desc = q['error_description'];
-        error = '登录被拒绝：${q['error']}${desc == null || desc.isEmpty ? '' : '（$desc）'}';
+        error =
+            '登录被拒绝：${q['error']}${desc == null || desc.isEmpty ? '' : '（$desc）'}';
       } else if ((q['code'] ?? '').isEmpty) {
         error = '回调缺少授权码';
       } else {
@@ -352,7 +357,10 @@ class Auth {
     }
     final data = _decodeJson(res);
     final token = data['token'];
-    if (res.statusCode >= 200 && res.statusCode < 300 && token is String && token.isNotEmpty) {
+    if (res.statusCode >= 200 &&
+        res.statusCode < 300 &&
+        token is String &&
+        token.isNotEmpty) {
       await _persistBuiltin(token);
       return;
     }
@@ -387,7 +395,8 @@ class Auth {
         retryAfter: _retryAfterOf(data),
       );
     }
-    final uriField = (data['otpauthUri'] as String?) ?? (data['uri'] as String?);
+    final uriField =
+        (data['otpauthUri'] as String?) ?? (data['uri'] as String?);
     if (uriField != null && uriField.isNotEmpty) return uriField;
     final secret = data['secret'];
     if (secret is String && secret.isNotEmpty) {
@@ -456,7 +465,11 @@ class Auth {
   }
 
   /// builtin 登出（best-effort，失败不阻断登出）：带 Bearer 让服务端作废 token。
-  static Future<void> _builtinLogout(String token, {http.Client? client, String? baseUrl}) async {
+  static Future<void> _builtinLogout(
+    String token, {
+    http.Client? client,
+    String? baseUrl,
+  }) async {
     if (token.isEmpty) return;
     try {
       final uri = Uri.parse('${_apiBase(baseUrl)}/api/admin/logout');
@@ -585,7 +598,10 @@ class Auth {
     await _storage.delete(key: _kBuiltinIssuedAt);
   }
 
-  static Future<void> _writeBuiltinToStorage(String token, DateTime issuedAt) async {
+  static Future<void> _writeBuiltinToStorage(
+    String token,
+    DateTime issuedAt,
+  ) async {
     await _storage.write(key: _kBuiltinAccess, value: token);
     await _storage.write(
       key: _kBuiltinIssuedAt,
@@ -628,7 +644,10 @@ class Auth {
     }
     final data = _json(res);
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      final desc = data['error_description'] ?? data['error'] ?? 'HTTP ${res.statusCode}';
+      final desc =
+          data['error_description'] ??
+          data['error'] ??
+          'HTTP ${res.statusCode}';
       throw AuthException('认证中心返回错误：$desc');
     }
     return data;

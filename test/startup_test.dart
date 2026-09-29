@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:home_admin/auth.dart';
+import 'package:home_admin/auth_mode.dart';
 import 'package:home_admin/home_page.dart';
 import 'package:home_admin/login_page.dart';
 import 'package:home_admin/main.dart' as app;
@@ -16,6 +17,8 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     Auth.storageAvailable.value = true;
+    // 固定为 sso，避免用例依赖真实网络探测（探测本身由 auth_mode_test 覆盖）
+    AuthModeProbe.seed(AuthMode.sso);
     AppStartup.resetForTest();
   });
 
