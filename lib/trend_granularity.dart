@@ -31,23 +31,6 @@ String trendGranularityLabel(TrendGranularity g) {
   }
 }
 
-/// 解析档位：仅接受四个已知 id，其它（null / 空串 / 大小写不符 / 旧值残留）
-/// 一律回退「秒」——对齐 Web `readGranularity`。
-TrendGranularity parseTrendGranularity(Object? raw) {
-  switch (raw) {
-    case 'sec':
-      return TrendGranularity.sec;
-    case 'min':
-      return TrendGranularity.min;
-    case 'hour':
-      return TrendGranularity.hour;
-    case 'day':
-      return TrendGranularity.day;
-    default:
-      return TrendGranularity.sec;
-  }
-}
-
 /// 非秒档位的聚合取数参数与刷新间隔（对齐 Web `GRANULARITY_QUERY`）。
 class TrendQuery {
   const TrendQuery({

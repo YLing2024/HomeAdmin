@@ -42,24 +42,6 @@ void main() {
     });
   });
 
-  group('非法档位回退为秒', () {
-    test('null / 空串 / 未知 / 大小写不符 / 旧值均回退 sec', () {
-      expect(parseTrendGranularity(null), TrendGranularity.sec);
-      expect(parseTrendGranularity(''), TrendGranularity.sec);
-      expect(parseTrendGranularity('SEC'), TrendGranularity.sec);
-      expect(parseTrendGranularity('5m'), TrendGranularity.sec);
-      expect(parseTrendGranularity('week'), TrendGranularity.sec);
-      expect(parseTrendGranularity(1), TrendGranularity.sec);
-    });
-
-    test('四个合法 id 原样解析', () {
-      expect(parseTrendGranularity('sec'), TrendGranularity.sec);
-      expect(parseTrendGranularity('min'), TrendGranularity.min);
-      expect(parseTrendGranularity('hour'), TrendGranularity.hour);
-      expect(parseTrendGranularity('day'), TrendGranularity.day);
-    });
-  });
-
   group('X 轴刻度格式化', () {
     final ts = DateTime(2026, 9, 29, 14, 5, 7).millisecondsSinceEpoch;
 
