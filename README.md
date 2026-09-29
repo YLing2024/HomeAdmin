@@ -3,7 +3,11 @@
 云铃管理后台的 Android 客户端（Flutter）。与 `admin-web` 对应，页面：系统监控、版本、博客、管理、
 终端（ttyd WebView）、文件、通知、调试、Hermes 控制台。
 
-## 鉴权：OAuth2 PKCE（公开客户端，无 client_secret）
+## 登录方式
+
+登录方式跟随服务端：服务端默认自带动态码登录，App 直接用；服务端关掉自带口令（sso）时走认证中心 PKCE。
+
+### sso：OAuth2 PKCE（公开客户端，无 client_secret）
 
 App 是原生客户端，与系统浏览器的 cookie store 不共享，因此不走网关的网页会话 cookie，统一走
 标准 OAuth2.1 / OIDC PKCE：
@@ -49,6 +53,7 @@ flutter build apk --release \
 
 产物位于 `build/app/outputs/flutter-apk/app-release.apk`。`client_id` 默认 `home-admin`，
 可用 `--dart-define=OAUTH_CLIENT_ID=...` 覆盖。本地调试：`flutter run` 后追加相同参数。
+App 不需要额外开关，模式由服务端 `auth-mode` 决定。
 
 ## 开发自检
 

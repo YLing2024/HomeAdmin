@@ -8,7 +8,7 @@
 
 | 页面 | 文件 | 说明 |
 |---|---|---|
-| 登录 | `login_page.dart` | 系统浏览器走标准 OAuth2 PKCE 登录（回环回调），不再输入 TOTP |
+| 登录 | `login_page.dart` | 跟随服务端模式：builtin 输入 6 位动态码，sso 走系统浏览器 PKCE（回环回调） |
 | 主页 | `home_page.dart` | 入口导航 |
 | 聊天 | `chat_page.dart` | 与 Hermes 网关对话（流式） |
 | 浏览 | `browse_page.dart` / `blog_page.dart` | 历史会话、博客 |
@@ -31,10 +31,11 @@ lib/
 ├── main.dart              # 入口：只做同步装配 + 最先 runApp（不 await 任何 IO）
 ├── startup.dart           # 启动编排（runApp 之后异步初始化、超时、降级、占位）
 ├── api.dart               # REST 封装（统一 Bearer、401 refresh 重试、全局登出回调）
-├── auth.dart              # OAuth2 PKCE 登录/续期/登出 + 系统安全存储
+├── auth.dart              # 登录/令牌/登出（builtin 动态码 + sso PKCE），系统安全存储
+├── auth_mode.dart         # 服务端认证模式探测（失败按 sso，进程内缓存）
 ├── pkce.dart              # PKCE 纯逻辑（verifier/challenge/state，可单测）
 ├── theme.dart             # 主题（与主页 v2 Swiss 调色板对齐）
-├── login_page.dart        # PKCE 登录入口页 + 全局 forceLogout()
+├── login_page.dart        # 登录入口页（按模式渲染 builtin 动态码 / sso PKCE）+ forceLogout()
 ├── home_page.dart / chat_page.dart / browse_page.dart
 ├── system_page.dart / version_page.dart / manage_page.dart / reset_totp_page.dart
 ├── command_palette.dart
@@ -73,10 +74,27 @@ flutter build apk --release       # 产物 build/app/outputs/flutter-apk/app-rel
 
 文案：唯美克制，**禁 emoji / 鸡汤 / 网络热词**。
 
-## 鉴权：标准 OAuth2 PKCE（2026-09-28 起）
+## 鉴权：双模式（builtin 动态码 / sso OAuth2 PKCE）
+
+登录方式**跟随服务端**：`admin-server` 有 `AUTH_MODE=builtin|sso`（默认 builtin）。App 不需要额外
+开关，模式由服务端决定。**探测失败一律按 sso**——绝不能因为一次探测失败就把用户自己的（sso）部署
+切成动态码登录页。sso 路径（PKCE / refresh / revoke / 401 语义）**行为不变**。
+
+- **探测**：`lib/auth_mode.dart` 的 `AuthModeProbe.get()` → `GET ${kApiBase}/api/admin/auth-mode`
+  （免鉴权）。仅 `200 && authMode=='builtin'` 判 builtin；非 200 / 坏 JSON / 结构不符 / 异常 / 超时
+  一律 **sso**。结果进程内缓存一次（`reset()` / `seed()` 供测试），不在每次请求里探测。
+- **builtin 登录**：入口仍是 `lib/login_page.dart`（单页按模式渲染，未确定期间只显示 loading）。
+  `Auth.loginWithCode()` → `POST /api/admin/login {code}`；token 存**独立 key** `builtin.access_token`
+  + 签发时间，**12h 有效、无 refresh**（`kBuiltinTokenTtl`），过期即回登录页。
+  失败映射：401 验证码错误 / 403 `totp_setup_required` → 首次绑定（`GET /api/admin/totp/setup`
+  展示二维码与明文 URI）/ 429 用 `retryAfter` 倒计时禁用提交。
+- **登出分流**：builtin → `POST /api/admin/logout`（best-effort）+ 清存储；sso → `/revoke`（原样）。
+  401 语义不变：`api.dart` 请求层不动，builtin 无 refresh，续期失败直接 `forceLogout()`。
+
+### sso：标准 OAuth2 PKCE（公开客户端，无 client_secret）
 
 App 是**原生客户端**，与系统浏览器的 cookie store 不共享，所以不能走网关的网页会话 cookie；
-统一改走标准 OAuth2.1 / OIDC PKCE（公开客户端，**无 client_secret**）：
+统一改走标准 OAuth2.1 / OIDC PKCE：
 
 - 登录：`lib/auth.dart` 生成 `code_verifier`/`code_challenge(S256)`/`state`（`lib/pkce.dart`）→
   `url_launcher` 打开系统浏览器 `/authorize` → App 内起一个**只监听 `127.0.0.1:53682`** 的临时
