@@ -1178,8 +1178,10 @@ class _TrendChartState extends State<TrendChart> {
 
   bool get _sparse => widget.granularity != TrendGranularity.sec;
 
-  String get _memoryKey =>
-      '${trendGranularityId(widget.granularity)}:${widget.chartId}';
+  /// 平移记忆键：仅非秒档记忆（对齐 Web `memoryKey`，秒档返回 null，不读不写）。
+  String? get _memoryKey => widget.granularity == TrendGranularity.sec
+      ? null
+      : '${trendGranularityId(widget.granularity)}:${widget.chartId}';
 
   @override
   void initState() {
@@ -1196,14 +1198,24 @@ class _TrendChartState extends State<TrendChart> {
     }
   }
 
+  /// 秒档不参与平移记忆：重置为跟随最新，切回秒档仍是跟随态（R5）。
   void _restoreView() {
-    final m = _trendViewMemory[_memoryKey];
+    final key = _memoryKey;
+    if (key == null) {
+      _offset = 0;
+      _follow = true;
+      return;
+    }
+    final m = _trendViewMemory[key];
     _offset = m?.offset ?? 0;
     _follow = m?.follow ?? true;
   }
 
+  /// 秒档不写平移记忆（对齐 Web `remember` 里的 `if (memoryKey)`）。
   void _remember(int offset, bool follow) {
-    _trendViewMemory[_memoryKey] = (offset: offset, follow: follow);
+    final key = _memoryKey;
+    if (key == null) return;
+    _trendViewMemory[key] = (offset: offset, follow: follow);
   }
 
   @override
