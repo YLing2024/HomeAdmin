@@ -63,6 +63,40 @@ class ApiCallResult {
   }
 }
 
+/// 系统趋势聚合结果（`GET /api/admin/system/metrics`）。
+///
+/// `points` 与 `/api/admin/system/history` 同构（字段名与单位一致，图表映射通用）；
+/// `meta.recordedSeconds` 供「数据积累中（已记录 N 分钟）」空态使用。
+class SystemMetrics {
+  const SystemMetrics({required this.points, required this.meta});
+
+  static const SystemMetrics empty = SystemMetrics(points: [], meta: {});
+
+  final List<Map<String, dynamic>> points;
+  final Map<String, dynamic> meta;
+
+  /// 解析响应体：`points` 非数组 / 坏结构一律按空处理，不抛异常。
+  factory SystemMetrics.fromJson(Map<String, dynamic> data) {
+    final rawPoints = data['points'];
+    final rawMeta = data['meta'];
+    return SystemMetrics(
+      points: rawPoints is List
+          ? rawPoints
+              .whereType<Map>()
+              .map((m) => Map<String, dynamic>.from(m))
+              .toList()
+          : const [],
+      meta: rawMeta is Map ? Map<String, dynamic>.from(rawMeta) : const {},
+    );
+  }
+
+  /// `meta.recordedSeconds`（服务端为数字）；缺失 / 非数字 → null。
+  int? get recordedSeconds {
+    final v = meta['recordedSeconds'];
+    return v is num ? v.toInt() : null;
+  }
+}
+
 /// REST API 封装：系统监控 / 上传下载 / TOTP 重置 / 博客管理 / 通知。
 ///
 /// 鉴权：登录态由 [Auth]（PKCE + 系统安全存储）持有，这里统一在
@@ -155,6 +189,21 @@ class Api {
   static Future<List<dynamic>> systemHistory() async {
     final res = await _get(_uri(kApiBase, '/api/admin/system/history'));
     return _decodeList(res);
+  }
+
+  /// GET /api/admin/system/metrics?range=&step= -> { points, meta }
+  ///
+  /// 趋势聚合：`range` ∈ 1h|6h|1d|7d|30d，`step` ∈ 1m|5m|1h|1d（对齐 admin-web）。
+  /// 后端对未知参数回退 `range=1d&step=1m` 并返回 200；无数据返回 `points: []`
+  /// + 完整 `meta`，绝不 500。鉴权 / 401 续期沿用 [_authed] 统一链路。
+  static Future<SystemMetrics> systemMetrics({
+    required String range,
+    required String step,
+  }) async {
+    final res = await _get(
+      _uri(kApiBase, '/api/admin/system/metrics', {'range': range, 'step': step}),
+    );
+    return SystemMetrics.fromJson(_decode(res));
   }
 
   /// GET /api/admin/services -> { services, processes }
