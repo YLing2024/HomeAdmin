@@ -14,7 +14,7 @@ import 'notification_model.dart';
 import 'notification_store.dart';
 
 /// 常驻通知文案（克制，不花哨）
-const String kNotificationServiceTitle = 'HomeAdmin';
+const String kNotificationServiceTitle = 'Atrium';
 const String kNotificationServiceText = '通知服务运行中';
 
 /// 本地通知渠道（与前台服务通知分开，避免互相覆盖）

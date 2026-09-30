@@ -1,5 +1,5 @@
 name: home_admin
-description: "HomeAdmin - 个人管理后台 App"
+description: "Atrium - 个人管理后台 App"
 publish_to: 'none'
 version: 1.10.0+2016
 environment:

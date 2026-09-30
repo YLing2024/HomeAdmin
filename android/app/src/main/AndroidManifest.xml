@@ -9,7 +9,7 @@
     <!-- 自签名分发、不走商店，可在管理页引导用户申请忽略电池优化 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <application
-        android:label="HomeAdmin"
+        android:label="Atrium"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

@@ -55,7 +55,7 @@ flutter run                       # 连真机/模拟器
 flutter build apk --release       # 产物 build/app/outputs/flutter-apk/app-release.apk
 ```
 
-## 构建（服务器 1.9G 内存，必读）
+## 构建（服务器内存有限，必读）
 
 在这台 VPS 上构建 APK **必须**先处理这两个坑，否则会白等一轮（每轮约 25 分钟）：
 
